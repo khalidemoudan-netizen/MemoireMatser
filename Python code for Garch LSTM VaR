@@ -1,0 +1,3900 @@
+# ============================================================
+# STEP 1 : Préparation des données MASI
+# ============================================================
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+
+# ------------------------------------------------------------
+# 1. Paramètres généraux
+# ------------------------------------------------------------
+
+FILE_PATH = "MASI index 2002 2026.xlsx"
+SHEET_NAME = "Sheet1"
+
+DATE_COL = "Date"
+PRICE_COL = "Close"
+
+# ------------------------------------------------------------
+# 2. Importation des données
+# ------------------------------------------------------------
+
+df = pd.read_excel(FILE_PATH, sheet_name=SHEET_NAME, engine="openpyxl")
+
+# Nettoyage des noms de colonnes
+df.columns = [str(col).strip() for col in df.columns]
+
+print("Colonnes disponibles :")
+print(df.columns)
+
+# ------------------------------------------------------------
+# 3. Nettoyage des données
+# ------------------------------------------------------------
+
+# Conversion de la colonne Date
+df[DATE_COL] = pd.to_datetime(df[DATE_COL], errors="coerce")
+
+# Conversion du prix de clôture en numérique
+df[PRICE_COL] = pd.to_numeric(df[PRICE_COL], errors="coerce")
+
+# Suppression des observations invalides
+df = df.dropna(subset=[DATE_COL, PRICE_COL])
+
+# Tri chronologique
+df = df.sort_values(DATE_COL).reset_index(drop=True)
+
+# Suppression des doublons éventuels
+df = df.drop_duplicates(subset=[DATE_COL]).reset_index(drop=True)
+
+# ------------------------------------------------------------
+# 4. Construction des rendements logarithmiques
+# ------------------------------------------------------------
+
+df["log_close"] = np.log(df[PRICE_COL])
+
+df["ret"] = 100 * df["log_close"].diff()
+
+# ------------------------------------------------------------
+# 5. Construction du proxy de volatilité
+# ------------------------------------------------------------
+
+df["abs_ret"] = df["ret"].abs()
+
+# Suppression de la première ligne, car le rendement est manquant
+df = df.dropna(subset=["ret", "abs_ret"]).reset_index(drop=True)
+
+# ------------------------------------------------------------
+# 6. Vérification de la base finale
+# ------------------------------------------------------------
+
+print("\nAperçu de la base préparée :")
+print(df.head())
+
+print("\nDernières observations :")
+print(df.tail())
+
+print("\nRésumé de la base :")
+print(f"Nombre d'observations utilisables : {len(df)}")
+print(f"Date de début : {df[DATE_COL].min().date()}")
+print(f"Date de fin   : {df[DATE_COL].max().date()}")
+
+print("\nStatistiques descriptives des rendements :")
+print(df["ret"].describe())
+
+# ------------------------------------------------------------
+# 7. Visualisation des prix et des rendements
+# ------------------------------------------------------------
+
+plt.figure(figsize=(12, 5))
+plt.plot(df[DATE_COL], df[PRICE_COL])
+plt.title("Évolution historique de l'indice MASI")
+plt.xlabel("Date")
+plt.ylabel("Prix de clôture")
+plt.tight_layout()
+plt.show()
+
+plt.figure(figsize=(12, 5))
+plt.plot(df[DATE_COL], df["ret"])
+plt.axhline(0, color="black", linewidth=0.8)
+plt.title("Rendements logarithmiques journaliers du MASI")
+plt.xlabel("Date")
+plt.ylabel("Rendements (%)")
+plt.tight_layout()
+plt.show()
+
+plt.figure(figsize=(12, 5))
+plt.plot(df[DATE_COL], df["abs_ret"])
+plt.title("Proxy de volatilité : rendements absolus du MASI")
+plt.xlabel("Date")
+plt.ylabel(r"$|r_t|$")
+plt.tight_layout()
+plt.show()
+
+
+
+
+
+# ============================================================
+# STEP 3 : Estimation des modèles GARCH, EGARCH et GJR-GARCH
+# ============================================================
+
+# Si nécessaire :
+!pip install arch
+import pandas as pd
+import numpy as np
+import warnings
+warnings.filterwarnings("ignore")
+
+from arch import arch_model
+
+# ------------------------------------------------------------
+# 1. Importation de la base préparée
+# ------------------------------------------------------------
+
+DATA_FILE = "MASI_prepared_data.xlsx"
+
+df = pd.read_excel(DATA_FILE, engine="openpyxl")
+
+df["Date"] = pd.to_datetime(df["Date"])
+df = df.sort_values("Date").reset_index(drop=True)
+
+# Série des rendements logarithmiques en pourcentage
+returns = df["ret"].dropna().astype(float)
+
+print("Nombre d'observations utilisées :", len(returns))
+print("Période :", df["Date"].min().date(), "à", df["Date"].max().date())
+
+
+# ------------------------------------------------------------
+# 2. Découpage in-sample / out-of-sample
+# ------------------------------------------------------------
+
+TRAIN_RATIO = 0.80
+
+split_idx = int(len(returns) * TRAIN_RATIO)
+
+returns_train = returns.iloc[:split_idx]
+returns_test = returns.iloc[split_idx:]
+
+print("\nDécoupage de l'échantillon :")
+print("In-sample  :", len(returns_train), "observations")
+print("Out-sample :", len(returns_test), "observations")
+
+
+# ------------------------------------------------------------
+# 3. Fonction d'estimation des modèles GARCH-family
+# ------------------------------------------------------------
+
+def estimate_garch_family_model(
+    returns,
+    model_type="GARCH",
+    p=1,
+    o=0,
+    q=1,
+    dist="t",
+    mean="Constant"
+):
+    """
+    Estime un modèle GARCH-family avec la librairie arch.
+
+    Paramètres :
+    ------------
+    model_type : str
+        "GARCH", "EGARCH" ou "GJR-GARCH"
+    p, o, q : int
+        Ordres du modèle.
+        p : terme ARCH
+        o : terme asymétrique
+        q : terme GARCH
+    dist : str
+        Distribution des innovations : "normal" ou "t"
+    mean : str
+        Spécification de la moyenne : "Constant" par défaut.
+    """
+
+    if model_type == "GARCH":
+        model = arch_model(
+            returns,
+            mean=mean,
+            vol="GARCH",
+            p=p,
+            o=0,
+            q=q,
+            dist=dist,
+            rescale=False
+        )
+
+    elif model_type == "EGARCH":
+        model = arch_model(
+            returns,
+            mean=mean,
+            vol="EGARCH",
+            p=p,
+            o=o,
+            q=q,
+            dist=dist,
+            rescale=False
+        )
+
+    elif model_type == "GJR-GARCH":
+        model = arch_model(
+            returns,
+            mean=mean,
+            vol="GARCH",
+            p=p,
+            o=o,
+            q=q,
+            dist=dist,
+            rescale=False
+        )
+
+    else:
+        raise ValueError("model_type doit être : 'GARCH', 'EGARCH' ou 'GJR-GARCH'.")
+
+    result = model.fit(disp="off", show_warning=False)
+
+    return result
+
+
+# ------------------------------------------------------------
+# 4. Grille d'estimation des modèles
+# ------------------------------------------------------------
+
+P_RANGE = [1, 2]
+Q_RANGE = [1, 2]
+DISTRIBUTIONS = ["normal", "t"]
+
+results_list = []
+fitted_models = {}
+
+model_families = ["GARCH", "EGARCH", "GJR-GARCH"]
+
+for family in model_families:
+
+    for p in P_RANGE:
+        for q in Q_RANGE:
+            for dist in DISTRIBUTIONS:
+
+                # GARCH standard : pas de terme asymétrique
+                if family == "GARCH":
+                    o_values = [0]
+                else:
+                    o_values = [1]
+
+                for o in o_values:
+
+                    model_name = f"{family}({p},{o},{q})-{dist}"
+
+                    try:
+                        result = estimate_garch_family_model(
+                            returns=returns_train,
+                            model_type=family,
+                            p=p,
+                            o=o,
+                            q=q,
+                            dist=dist
+                        )
+
+                        fitted_models[model_name] = result
+
+                        results_list.append({
+                            "Model": model_name,
+                            "Family": family,
+                            "p": p,
+                            "o": o,
+                            "q": q,
+                            "Distribution": dist,
+                            "LogLikelihood": result.loglikelihood,
+                            "AIC": result.aic,
+                            "BIC": result.bic,
+                            "Converged": result.convergence_flag == 0
+                        })
+
+                        print(f"Estimé avec succès : {model_name}")
+
+                    except Exception as e:
+                        print(f"Échec estimation : {model_name} | Erreur : {e}")
+
+                        results_list.append({
+                            "Model": model_name,
+                            "Family": family,
+                            "p": p,
+                            "o": o,
+                            "q": q,
+                            "Distribution": dist,
+                            "LogLikelihood": np.nan,
+                            "AIC": np.nan,
+                            "BIC": np.nan,
+                            "Converged": False
+                        })
+
+
+# ------------------------------------------------------------
+# 5. Tableau comparatif AIC / BIC
+# ------------------------------------------------------------
+
+ic_table = pd.DataFrame(results_list)
+
+ic_table = ic_table.dropna(subset=["AIC", "BIC"]).reset_index(drop=True)
+
+ic_table_sorted_aic = ic_table.sort_values("AIC").reset_index(drop=True)
+ic_table_sorted_bic = ic_table.sort_values("BIC").reset_index(drop=True)
+
+print("\n============================================================")
+print("Classement des modèles selon AIC")
+print("============================================================")
+print(ic_table_sorted_aic)
+
+print("\n============================================================")
+print("Classement des modèles selon BIC")
+print("============================================================")
+print(ic_table_sorted_bic)
+
+
+# ------------------------------------------------------------
+# 6. Sélection du meilleur modèle selon AIC et BIC
+# ------------------------------------------------------------
+
+best_aic_row = ic_table_sorted_aic.iloc[0]
+best_bic_row = ic_table_sorted_bic.iloc[0]
+
+best_aic_model_name = best_aic_row["Model"]
+best_bic_model_name = best_bic_row["Model"]
+
+best_aic_model = fitted_models[best_aic_model_name]
+best_bic_model = fitted_models[best_bic_model_name]
+
+print("\n============================================================")
+print("Meilleur modèle selon AIC")
+print("============================================================")
+print(best_aic_row)
+
+print("\n============================================================")
+print("Meilleur modèle selon BIC")
+print("============================================================")
+print(best_bic_row)
+
+
+# ------------------------------------------------------------
+# 7. Résumé détaillé du meilleur modèle BIC
+# ------------------------------------------------------------
+
+print("\n============================================================")
+print("Résumé du meilleur modèle selon BIC")
+print("============================================================")
+print(best_bic_model.summary())
+
+
+# ------------------------------------------------------------
+# 8. Extraction des paramètres estimés
+# ------------------------------------------------------------
+
+def extract_model_parameters(model_name, result):
+    """
+    Extrait les paramètres, erreurs standards, t-statistiques et p-values.
+    """
+
+    params_table = pd.DataFrame({
+        "Parameter": result.params.index,
+        "Estimate": result.params.values,
+        "Std_Error": result.std_err.values,
+        "T_Statistic": result.tvalues.values,
+        "P_Value": result.pvalues.values
+    })
+
+    params_table["Model"] = model_name
+
+    return params_table
+
+
+all_params = []
+
+for model_name, result in fitted_models.items():
+    try:
+        params = extract_model_parameters(model_name, result)
+        all_params.append(params)
+    except Exception as e:
+        print(f"Erreur extraction paramètres pour {model_name}: {e}")
+
+params_table = pd.concat(all_params, ignore_index=True)
+
+
+# ------------------------------------------------------------
+# 9. Volatilité conditionnelle du meilleur modèle
+# ------------------------------------------------------------
+
+df_train = df.iloc[:split_idx].copy()
+
+df_train["conditional_volatility_best_BIC"] = best_bic_model.conditional_volatility.values
+
+print("\nAperçu de la volatilité conditionnelle estimée :")
+print(df_train[["Date", "ret", "conditional_volatility_best_BIC"]].head())
+
+
+# ------------------------------------------------------------
+# 10. Sauvegarde des résultats
+# ------------------------------------------------------------
+
+OUTPUT_FILE = "Step3_GARCH_family_results.xlsx"
+
+with pd.ExcelWriter(OUTPUT_FILE, engine="openpyxl") as writer:
+    ic_table.to_excel(writer, sheet_name="AIC_BIC_Table", index=False)
+    ic_table_sorted_aic.to_excel(writer, sheet_name="Sorted_by_AIC", index=False)
+    ic_table_sorted_bic.to_excel(writer, sheet_name="Sorted_by_BIC", index=False)
+    params_table.to_excel(writer, sheet_name="Estimated_Parameters", index=False)
+    df_train.to_excel(writer, sheet_name="Best_BIC_Volatility", index=False)
+
+print(f"\nRésultats sauvegardés dans : {OUTPUT_FILE}")
+
+
+# ------------------------------------------------------------
+# 11. Interprétation rapide de la persistance
+# ------------------------------------------------------------
+
+print("\n============================================================")
+print("Interprétation rapide du meilleur modèle BIC")
+print("============================================================")
+
+best_params = best_bic_model.params
+
+print(best_params)
+
+alpha_params = [x for x in best_params.index if "alpha" in x]
+beta_params = [x for x in best_params.index if "beta" in x]
+gamma_params = [x for x in best_params.index if "gamma" in x]
+
+alpha_sum = best_params[alpha_params].sum() if len(alpha_params) > 0 else 0
+beta_sum = best_params[beta_params].sum() if len(beta_params) > 0 else 0
+gamma_sum = best_params[gamma_params].sum() if len(gamma_params) > 0 else 0
+
+selected_family = best_bic_row["Family"]
+
+if selected_family == "GARCH":
+    persistence = alpha_sum + beta_sum
+    print(f"\nPersistance approximative alpha + beta = {persistence:.4f}")
+
+    if persistence < 1:
+        print("Le processus de volatilité est stationnaire en variance.")
+    else:
+        print("Attention : la volatilité est très persistante ou proche de la non-stationnarité.")
+
+elif selected_family == "GJR-GARCH":
+    persistence = alpha_sum + 0.5 * gamma_sum + beta_sum
+    print(f"\nPersistance approximative alpha + 0.5*gamma + beta = {persistence:.4f}")
+
+    if persistence < 1:
+        print("Le processus GJR-GARCH est stationnaire sous hypothèse de symétrie des chocs.")
+    else:
+        print("Attention : volatilité très persistante.")
+
+elif selected_family == "EGARCH":
+    print("\nPour EGARCH, la variance est modélisée en logarithme.")
+    print("La positivité de la variance est automatiquement garantie.")
+    print("La persistance est principalement captée par les paramètres beta.")
+
+
+
+# ============================================================
+# STEP 4 : Generate GARCH-based volatility inputs
+# ============================================================
+
+import pandas as pd
+import numpy as np
+import warnings
+warnings.filterwarnings("ignore")
+
+from arch import arch_model
+
+# ------------------------------------------------------------
+# 1. Load prepared data and Step 3 results
+# ------------------------------------------------------------
+
+DATA_FILE = "MASI_prepared_data.xlsx"
+GARCH_RESULTS_FILE = "Step3_GARCH_family_results.xlsx"
+
+df = pd.read_excel(DATA_FILE, engine="openpyxl")
+df["Date"] = pd.to_datetime(df["Date"])
+df = df.sort_values("Date").reset_index(drop=True)
+
+ic_table = pd.read_excel(
+    GARCH_RESULTS_FILE,
+    sheet_name="AIC_BIC_Table",
+    engine="openpyxl"
+)
+
+returns = df["ret"].astype(float)
+
+TRAIN_RATIO = 0.80
+split_idx = int(len(df) * TRAIN_RATIO)
+
+returns_train = returns.iloc[:split_idx]
+returns_test = returns.iloc[split_idx:]
+
+print("Train observations:", len(returns_train))
+print("Test observations :", len(returns_test))
+
+
+# ------------------------------------------------------------
+# 2. Select best model by family using BIC
+# ------------------------------------------------------------
+
+best_by_family = {}
+
+for family in ["GARCH", "EGARCH", "GJR-GARCH"]:
+    sub = ic_table[ic_table["Family"] == family].copy()
+    sub = sub.dropna(subset=["BIC"])
+    sub = sub.sort_values("BIC")
+
+    if len(sub) == 0:
+        raise ValueError(f"No valid model found for {family}")
+
+    best_row = sub.iloc[0]
+    best_by_family[family] = best_row
+
+    print("\nBest", family, "model:")
+    print(best_row[["Model", "p", "o", "q", "Distribution", "AIC", "BIC"]])
+
+
+# ------------------------------------------------------------
+# 3. Function to estimate GARCH-family models
+# ------------------------------------------------------------
+
+def fit_garch_model(returns, family, p, o, q, dist):
+    """
+    Estimate GARCH, EGARCH or GJR-GARCH model.
+    """
+
+    if family == "GARCH":
+        model = arch_model(
+            returns,
+            mean="Constant",
+            vol="GARCH",
+            p=int(p),
+            o=0,
+            q=int(q),
+            dist=dist,
+            rescale=False
+        )
+
+    elif family == "EGARCH":
+        model = arch_model(
+            returns,
+            mean="Constant",
+            vol="EGARCH",
+            p=int(p),
+            o=int(o),
+            q=int(q),
+            dist=dist,
+            rescale=False
+        )
+
+    elif family == "GJR-GARCH":
+        model = arch_model(
+            returns,
+            mean="Constant",
+            vol="GARCH",
+            p=int(p),
+            o=int(o),
+            q=int(q),
+            dist=dist,
+            rescale=False
+        )
+
+    else:
+        raise ValueError("Unknown model family.")
+
+    result = model.fit(disp="off", show_warning=False)
+
+    return result
+
+
+# ------------------------------------------------------------
+# 4. Estimate best model of each family on the in-sample period
+# ------------------------------------------------------------
+
+fitted_family_models = {}
+
+for family, row in best_by_family.items():
+
+    result = fit_garch_model(
+        returns=returns_train,
+        family=family,
+        p=row["p"],
+        o=row["o"],
+        q=row["q"],
+        dist=row["Distribution"]
+    )
+
+    fitted_family_models[family] = result
+
+    print("\n============================================================")
+    print(f"Summary of best {family} model")
+    print("============================================================")
+    print(result.summary())
+
+
+# ------------------------------------------------------------
+# 5. Rolling one-step-ahead volatility forecasts
+# ------------------------------------------------------------
+
+def rolling_garch_forecast(
+    full_returns,
+    start_idx,
+    end_idx,
+    family,
+    p,
+    o,
+    q,
+    dist,
+    rolling_window,
+    refit_every=1
+):
+    """
+    Produces one-step-ahead rolling volatility forecasts.
+
+    Forecast at time t uses only information up to t-1.
+    """
+
+    forecasts = []
+    forecast_index = []
+
+    last_result = None
+    last_fit_time = None
+
+    for t in range(start_idx, end_idx):
+
+        window_start = max(0, t - rolling_window)
+        estimation_sample = full_returns.iloc[window_start:t]
+
+        should_refit = (
+            last_result is None or
+            last_fit_time is None or
+            (t - last_fit_time) >= refit_every
+        )
+
+        if should_refit:
+            try:
+                last_result = fit_garch_model(
+                    returns=estimation_sample,
+                    family=family,
+                    p=p,
+                    o=o,
+                    q=q,
+                    dist=dist
+                )
+                last_fit_time = t
+
+            except Exception as e:
+                print(f"Rolling estimation failed at t={t} for {family}: {e}")
+                forecasts.append(np.nan)
+                forecast_index.append(t)
+                continue
+
+        try:
+            forecast = last_result.forecast(horizon=1, reindex=False)
+            variance_forecast = forecast.variance.values[-1, 0]
+            volatility_forecast = np.sqrt(max(variance_forecast, 1e-12))
+
+        except Exception as e:
+            print(f"Forecast failed at t={t} for {family}: {e}")
+            volatility_forecast = np.nan
+
+        forecasts.append(volatility_forecast)
+        forecast_index.append(t)
+
+    return pd.Series(forecasts, index=forecast_index)
+
+
+# ------------------------------------------------------------
+# 6. Construct full volatility input series
+# ------------------------------------------------------------
+
+ROLLING_WINDOW = len(returns_train)
+
+# Set to 1 for strict rolling re-estimation.
+# Use 5 or 10 if computation is slow.
+REFIT_EVERY = 1
+
+for family, row in best_by_family.items():
+
+    print(f"\nGenerating volatility input for {family}...")
+
+    # In-sample conditional volatility
+    insample_vol = fitted_family_models[family].conditional_volatility
+
+    # Out-of-sample rolling forecasts
+    oos_vol = rolling_garch_forecast(
+        full_returns=returns,
+        start_idx=split_idx,
+        end_idx=len(df),
+        family=family,
+        p=int(row["p"]),
+        o=int(row["o"]),
+        q=int(row["q"]),
+        dist=row["Distribution"],
+        rolling_window=ROLLING_WINDOW,
+        refit_every=REFIT_EVERY
+    )
+
+    full_vol = pd.Series(index=df.index, dtype=float)
+
+    full_vol.iloc[:split_idx] = insample_vol.values
+    full_vol.iloc[split_idx:] = oos_vol.reindex(range(split_idx, len(df))).values
+
+    full_vol = full_vol.replace([np.inf, -np.inf], np.nan)
+    full_vol = full_vol.ffill().bfill()
+
+    col_name = f"{family.replace('-', '_')}_vol"
+    df[col_name] = full_vol
+
+    print(f"Created column: {col_name}")
+
+
+# ------------------------------------------------------------
+# 7. Select best global GARCH-family model according to BIC
+# ------------------------------------------------------------
+
+global_best = ic_table.dropna(subset=["BIC"]).sort_values("BIC").iloc[0]
+global_family = global_best["Family"]
+
+print("\n============================================================")
+print("Global best model according to BIC")
+print("============================================================")
+print(global_best[["Model", "Family", "p", "o", "q", "Distribution", "AIC", "BIC"]])
+
+selected_col = f"{global_family.replace('-', '_')}_vol"
+df["selected_garch_vol"] = df[selected_col]
+
+print(f"\nSelected GARCH volatility column: {selected_col}")
+
+
+
+# ============================================================
+# VISUALISATION DU MEILLEUR MODÈLE GARCH-FAMILY AVANT LSTM
+# ============================================================
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import warnings
+warnings.filterwarnings("ignore")
+
+from arch import arch_model
+from sklearn.metrics import mean_squared_error, mean_absolute_error
+
+# ------------------------------------------------------------
+# 1. Charger les fichiers issus des étapes précédentes
+# ------------------------------------------------------------
+
+DATA_FILE = "Step4_GARCH_volatility_inputs.xlsx"
+IC_FILE = "Step3_GARCH_family_results.xlsx"
+
+df = pd.read_excel(DATA_FILE, engine="openpyxl")
+df["Date"] = pd.to_datetime(df["Date"])
+df = df.sort_values("Date").reset_index(drop=True)
+
+ic_table = pd.read_excel(IC_FILE, sheet_name="AIC_BIC_Table", engine="openpyxl")
+
+returns = df["ret"].astype(float)
+proxy_vol = df["abs_ret"].astype(float)
+
+TRAIN_RATIO = 0.80
+split_idx = int(len(df) * TRAIN_RATIO)
+
+train_df = df.iloc[:split_idx].copy()
+test_df = df.iloc[split_idx:].copy()
+
+returns_train = returns.iloc[:split_idx]
+returns_test = returns.iloc[split_idx:]
+
+print("Nombre total d'observations :", len(df))
+print("In-sample :", len(train_df))
+print("Out-of-sample :", len(test_df))
+
+
+# ------------------------------------------------------------
+# 2. Sélection du meilleur modèle selon BIC
+# ------------------------------------------------------------
+
+ic_table_clean = ic_table.dropna(subset=["AIC", "BIC"]).copy()
+
+best_model_row = ic_table_clean.sort_values("BIC").iloc[0]
+
+best_family = best_model_row["Family"]
+best_p = int(best_model_row["p"])
+best_o = int(best_model_row["o"])
+best_q = int(best_model_row["q"])
+best_dist = best_model_row["Distribution"]
+best_name = best_model_row["Model"]
+
+print("\n============================================================")
+print("Meilleur modèle GARCH-family selon BIC")
+print("============================================================")
+print(best_model_row[["Model", "Family", "p", "o", "q", "Distribution", "AIC", "BIC"]])
+
+
+# ------------------------------------------------------------
+# 3. Fonction d'estimation du modèle sélectionné
+# ------------------------------------------------------------
+
+def fit_selected_garch(returns, family, p, o, q, dist):
+    """
+    Estime GARCH, EGARCH ou GJR-GARCH.
+    """
+
+    if family == "GARCH":
+        model = arch_model(
+            returns,
+            mean="Constant",
+            vol="GARCH",
+            p=p,
+            o=0,
+            q=q,
+            dist=dist,
+            rescale=False
+        )
+
+    elif family == "EGARCH":
+        model = arch_model(
+            returns,
+            mean="Constant",
+            vol="EGARCH",
+            p=p,
+            o=o,
+            q=q,
+            dist=dist,
+            rescale=False
+        )
+
+    elif family == "GJR-GARCH":
+        model = arch_model(
+            returns,
+            mean="Constant",
+            vol="GARCH",
+            p=p,
+            o=o,
+            q=q,
+            dist=dist,
+            rescale=False
+        )
+
+    else:
+        raise ValueError("Famille inconnue.")
+
+    result = model.fit(disp="off", show_warning=False)
+    return result
+
+
+# ------------------------------------------------------------
+# 4. Réestimation du meilleur modèle sur l'échantillon train
+# ------------------------------------------------------------
+
+best_result = fit_selected_garch(
+    returns=returns_train,
+    family=best_family,
+    p=best_p,
+    o=best_o,
+    q=best_q,
+    dist=best_dist
+)
+
+print("\n============================================================")
+print("Résumé du meilleur modèle")
+print("============================================================")
+print(best_result.summary())
+
+
+# ------------------------------------------------------------
+# 5. Volatilité conditionnelle in-sample
+# ------------------------------------------------------------
+
+train_df["best_garch_cond_vol"] = best_result.conditional_volatility.values
+
+
+# ------------------------------------------------------------
+# 6. Prévision rolling one-step-ahead sur l'échantillon test
+# ------------------------------------------------------------
+
+def rolling_forecast_best_garch(
+    full_returns,
+    start_idx,
+    end_idx,
+    family,
+    p,
+    o,
+    q,
+    dist,
+    rolling_window,
+    refit_every=1
+):
+    """
+    Prévision rolling one-step-ahead.
+    La prévision à la date t utilise uniquement les observations jusqu'à t-1.
+    """
+
+    forecasts = []
+    forecast_indices = []
+
+    last_result = None
+    last_fit_t = None
+
+    for t in range(start_idx, end_idx):
+
+        window_start = max(0, t - rolling_window)
+        estimation_sample = full_returns.iloc[window_start:t]
+
+        should_refit = (
+            last_result is None or
+            last_fit_t is None or
+            (t - last_fit_t) >= refit_every
+        )
+
+        if should_refit:
+            try:
+                last_result = fit_selected_garch(
+                    returns=estimation_sample,
+                    family=family,
+                    p=p,
+                    o=o,
+                    q=q,
+                    dist=dist
+                )
+                last_fit_t = t
+            except Exception as e:
+                print(f"Erreur estimation rolling à t={t}: {e}")
+                forecasts.append(np.nan)
+                forecast_indices.append(t)
+                continue
+
+        try:
+            fcast = last_result.forecast(horizon=1, reindex=False)
+            forecast_var = fcast.variance.values[-1, 0]
+            forecast_vol = np.sqrt(max(forecast_var, 1e-12))
+        except Exception as e:
+            print(f"Erreur prévision à t={t}: {e}")
+            forecast_vol = np.nan
+
+        forecasts.append(forecast_vol)
+        forecast_indices.append(t)
+
+    return pd.Series(forecasts, index=forecast_indices)
+
+
+ROLLING_WINDOW = len(returns_train)
+
+# REFIT_EVERY = 1 est le plus rigoureux mais plus lent.
+# Pour test rapide, utiliser REFIT_EVERY = 5 ou 10.
+REFIT_EVERY = 1
+
+print("\nCalcul des prévisions rolling out-of-sample...")
+
+test_forecast_vol = rolling_forecast_best_garch(
+    full_returns=returns,
+    start_idx=split_idx,
+    end_idx=len(df),
+    family=best_family,
+    p=best_p,
+    o=best_o,
+    q=best_q,
+    dist=best_dist,
+    rolling_window=ROLLING_WINDOW,
+    refit_every=REFIT_EVERY
+)
+
+test_df["best_garch_forecast_vol"] = test_forecast_vol.values
+
+# Nettoyage éventuel
+test_df["best_garch_forecast_vol"] = (
+    test_df["best_garch_forecast_vol"]
+    .replace([np.inf, -np.inf], np.nan)
+    .ffill()
+    .bfill()
+)
+
+
+# ------------------------------------------------------------
+# 7. Métriques de performance hors échantillon
+# ------------------------------------------------------------
+
+def qlike_loss(y_true_vol, y_pred_vol):
+    eps = 1e-10
+    true_var = np.maximum(np.asarray(y_true_vol) ** 2, eps)
+    pred_var = np.maximum(np.asarray(y_pred_vol) ** 2, eps)
+    return np.mean(np.log(pred_var) + true_var / pred_var)
+
+
+y_true = test_df["abs_ret"].values
+y_pred = test_df["best_garch_forecast_vol"].values
+
+mse = mean_squared_error(y_true, y_pred)
+rmse = np.sqrt(mse)
+mae = mean_absolute_error(y_true, y_pred)
+qlike = qlike_loss(y_true, y_pred)
+
+performance = pd.DataFrame({
+    "Model": [best_name],
+    "Family": [best_family],
+    "Distribution": [best_dist],
+    "MSE": [mse],
+    "RMSE": [rmse],
+    "MAE": [mae],
+    "QLIKE": [qlike],
+    "N_test": [len(test_df)]
+})
+
+print("\n============================================================")
+print("Performance out-of-sample du meilleur modèle GARCH-family")
+print("============================================================")
+print(performance)
+
+
+# ------------------------------------------------------------
+# 8. Visualisation 1 : rendements et volatilité conditionnelle
+# ------------------------------------------------------------
+
+plt.figure(figsize=(14, 6))
+
+plt.plot(
+    train_df["Date"],
+    train_df["ret"],
+    label="Rendements MASI",
+    color="steelblue",
+    linewidth=0.7,
+    alpha=0.7
+)
+
+plt.plot(
+    train_df["Date"],
+    train_df["best_garch_cond_vol"],
+    label=f"Volatilité conditionnelle estimée - {best_name}",
+    color="darkred",
+    linewidth=1.2
+)
+
+plt.title(f"Rendements et volatilité conditionnelle estimée - {best_name}")
+plt.xlabel("Date")
+plt.ylabel("Rendements / Volatilité (%)")
+plt.legend()
+plt.tight_layout()
+plt.savefig("Best_GARCH_conditional_volatility_in_sample.png", dpi=300)
+plt.show()
+
+
+# ------------------------------------------------------------
+# 9. Visualisation 2 : proxy de volatilité vs prévision GARCH
+# ------------------------------------------------------------
+
+plt.figure(figsize=(14, 6))
+
+plt.plot(
+    test_df["Date"],
+    test_df["abs_ret"],
+    label="Proxy de volatilité |r_t|",
+    color="black",
+    linewidth=0.8,
+    alpha=0.8
+)
+
+plt.plot(
+    test_df["Date"],
+    test_df["best_garch_forecast_vol"],
+    label=f"Prévision rolling - {best_name}",
+    color="darkorange",
+    linewidth=1.2
+)
+
+plt.title(f"Prévision out-of-sample de la volatilité - {best_name}")
+plt.xlabel("Date")
+plt.ylabel("Volatilité (%)")
+plt.legend()
+plt.tight_layout()
+plt.savefig("Best_GARCH_forecast_vs_proxy.png", dpi=300)
+plt.show()
+
+
+# ------------------------------------------------------------
+# 10. Visualisation 3 : zoom sur la période test
+# ------------------------------------------------------------
+
+plt.figure(figsize=(14, 6))
+
+plt.plot(
+    test_df["Date"],
+    test_df["abs_ret"],
+    label="Volatilité proxy |r_t|",
+    color="gray",
+    linewidth=0.8
+)
+
+plt.plot(
+    test_df["Date"],
+    test_df["best_garch_forecast_vol"],
+    label=f"Volatilité prédite - {best_name}",
+    color="red",
+    linewidth=1.3
+)
+
+plt.fill_between(
+    test_df["Date"],
+    0,
+    test_df["best_garch_forecast_vol"],
+    color="red",
+    alpha=0.15
+)
+
+plt.title(f"Capacité du modèle à suivre les régimes de volatilité - {best_name}")
+plt.xlabel("Date")
+plt.ylabel("Volatilité (%)")
+plt.legend()
+plt.tight_layout()
+plt.savefig("Best_GARCH_forecast_regime_visualization.png", dpi=300)
+plt.show()
+
+
+# ------------------------------------------------------------
+# 11. Résidus standardisés du meilleur modèle
+# ------------------------------------------------------------
+
+std_resid = best_result.std_resid.dropna()
+
+plt.figure(figsize=(14, 5))
+
+plt.plot(
+    train_df["Date"].iloc[-len(std_resid):],
+    std_resid,
+    color="purple",
+    linewidth=0.7
+)
+
+plt.axhline(0, color="black", linewidth=0.8)
+plt.axhline(2, color="red", linestyle="--", linewidth=0.8)
+plt.axhline(-2, color="red", linestyle="--", linewidth=0.8)
+
+plt.title(f"Résidus standardisés du meilleur modèle - {best_name}")
+plt.xlabel("Date")
+plt.ylabel("Résidus standardisés")
+plt.tight_layout()
+plt.savefig("Best_GARCH_standardized_residuals.png", dpi=300)
+plt.show()
+
+
+# ------------------------------------------------------------
+# 12. Histogramme des résidus standardisés
+# ------------------------------------------------------------
+
+plt.figure(figsize=(10, 5))
+
+plt.hist(std_resid, bins=50, density=True, alpha=0.7, color="slateblue")
+
+plt.title(f"Distribution des résidus standardisés - {best_name}")
+plt.xlabel("Résidus standardisés")
+plt.ylabel("Densité")
+plt.tight_layout()
+plt.savefig("Best_GARCH_standardized_residuals_histogram.png", dpi=300)
+plt.show()
+
+
+# ------------------------------------------------------------
+# 13. Sauvegarde des résultats
+# ------------------------------------------------------------
+
+OUTPUT_FILE = "Best_GARCH_visual_diagnostics.xlsx"
+
+with pd.ExcelWriter(OUTPUT_FILE, engine="openpyxl") as writer:
+    best_model_row.to_frame().T.to_excel(writer, sheet_name="Best_Model", index=False)
+    performance.to_excel(writer, sheet_name="OOS_Performance", index=False)
+    train_df.to_excel(writer, sheet_name="InSample_ConditionalVol", index=False)
+    test_df.to_excel(writer, sheet_name="OOS_Forecasts", index=False)
+
+print(f"\nRésultats sauvegardés dans : {OUTPUT_FILE}")
+
+
+# ------------------------------------------------------------
+# 14. Conclusion automatique
+# ------------------------------------------------------------
+
+print("\n============================================================")
+print("Diagnostic visuel et économétrique")
+print("============================================================")
+
+print(f"Modèle retenu : {best_name}")
+print(f"RMSE  : {rmse:.6f}")
+print(f"MAE   : {mae:.6f}")
+print(f"QLIKE : {qlike:.6f}")
+
+print("""
+Interprétation :
+1. Si la volatilité conditionnelle augmente pendant les périodes de forts rendements absolus,
+   le modèle capture bien le clustering de volatilité.
+
+2. Si la courbe de prévision out-of-sample suit les pics du proxy |r_t|,
+   le modèle possède une capacité prédictive acceptable.
+
+3. Si les résidus standardisés ne présentent pas de longues périodes de forte amplitude,
+   le modèle a correctement absorbé une partie importante de l'hétéroscédasticité.
+
+4. Si les prévisions sont trop lisses et ne réagissent pas aux pics de volatilité,
+   cela justifie l'utilisation du LSTM ou du modèle hybride GARCH-LSTM.
+""")
+
+
+
+
+# ============================================================
+# AUTOMATIC READING AND INTERPRETATION OF BEST GARCH RESULTS
+# ============================================================
+
+import pandas as pd
+import numpy as np
+from statsmodels.stats.diagnostic import acorr_ljungbox, het_arch
+import warnings
+warnings.filterwarnings("ignore")
+
+# ------------------------------------------------------------
+# 1. Load outputs from previous GARCH diagnostic code
+# ------------------------------------------------------------
+
+DIAG_FILE = "Best_GARCH_visual_diagnostics.xlsx"
+STEP3_FILE = "Step3_GARCH_family_results.xlsx"
+
+best_model = pd.read_excel(DIAG_FILE, sheet_name="Best_Model", engine="openpyxl")
+performance = pd.read_excel(DIAG_FILE, sheet_name="OOS_Performance", engine="openpyxl")
+train_df = pd.read_excel(DIAG_FILE, sheet_name="InSample_ConditionalVol", engine="openpyxl")
+test_df = pd.read_excel(DIAG_FILE, sheet_name="OOS_Forecasts", engine="openpyxl")
+
+params_table = pd.read_excel(STEP3_FILE, sheet_name="Estimated_Parameters", engine="openpyxl")
+
+train_df["Date"] = pd.to_datetime(train_df["Date"])
+test_df["Date"] = pd.to_datetime(test_df["Date"])
+
+# ------------------------------------------------------------
+# 2. Extract best model information
+# ------------------------------------------------------------
+
+best_name = best_model.loc[0, "Model"]
+best_family = best_model.loc[0, "Family"]
+best_dist = best_model.loc[0, "Distribution"]
+best_aic = best_model.loc[0, "AIC"]
+best_bic = best_model.loc[0, "BIC"]
+
+print("\n============================================================")
+print("BEST MODEL INFORMATION")
+print("============================================================")
+print(f"Best model       : {best_name}")
+print(f"Family           : {best_family}")
+print(f"Distribution     : {best_dist}")
+print(f"AIC              : {best_aic:.4f}")
+print(f"BIC              : {best_bic:.4f}")
+
+# ------------------------------------------------------------
+# 3. Extract estimated parameters
+# ------------------------------------------------------------
+
+model_params = params_table[params_table["Model"] == best_name].copy()
+
+if model_params.empty:
+    raise ValueError(
+        f"No parameter estimates found for {best_name}. "
+        "Check that Step3_GARCH_family_results.xlsx contains Estimated_Parameters."
+    )
+
+print("\n============================================================")
+print("ESTIMATED PARAMETERS")
+print("============================================================")
+print(model_params)
+
+param_dict = dict(zip(model_params["Parameter"], model_params["Estimate"]))
+pvalue_dict = dict(zip(model_params["Parameter"], model_params["P_Value"]))
+
+alpha_params = {k: v for k, v in param_dict.items() if "alpha" in k}
+beta_params = {k: v for k, v in param_dict.items() if "beta" in k}
+gamma_params = {k: v for k, v in param_dict.items() if "gamma" in k}
+omega_params = {k: v for k, v in param_dict.items() if "omega" in k}
+mu_params = {k: v for k, v in param_dict.items() if k == "mu"}
+
+alpha_sum = np.sum(list(alpha_params.values())) if alpha_params else 0.0
+beta_sum = np.sum(list(beta_params.values())) if beta_params else 0.0
+gamma_sum = np.sum(list(gamma_params.values())) if gamma_params else 0.0
+omega = list(omega_params.values())[0] if omega_params else np.nan
+mu = list(mu_params.values())[0] if mu_params else 0.0
+
+# ------------------------------------------------------------
+# 4. Mathematical interpretation of parameters
+# ------------------------------------------------------------
+
+interpretation_rows = []
+
+for _, row in model_params.iterrows():
+    param = row["Parameter"]
+    estimate = row["Estimate"]
+    pval = row["P_Value"]
+
+    if pval < 0.01:
+        significance = "hautement significatif au seuil de 1 %"
+    elif pval < 0.05:
+        significance = "significatif au seuil de 5 %"
+    elif pval < 0.10:
+        significance = "faiblement significatif au seuil de 10 %"
+    else:
+        significance = "non significatif"
+
+    if param == "mu":
+        meaning = "rendement moyen conditionnel"
+    elif "omega" in param:
+        meaning = "constante de variance conditionnelle"
+    elif "alpha" in param:
+        meaning = "réaction de la volatilité aux chocs récents"
+    elif "beta" in param:
+        meaning = "persistance de la volatilité passée"
+    elif "gamma" in param:
+        if best_family == "EGARCH":
+            meaning = "effet asymétrique des chocs dans la variance logarithmique"
+        else:
+            meaning = "effet seuil / asymétrique des chocs négatifs"
+    elif param == "nu":
+        meaning = "degrés de liberté de la loi Student, indiquant l'épaisseur des queues"
+    else:
+        meaning = "paramètre du modèle"
+
+    interpretation_rows.append({
+        "Parameter": param,
+        "Estimate": estimate,
+        "P_Value": pval,
+        "Significance": significance,
+        "Economic_Meaning": meaning
+    })
+
+parameter_interpretation = pd.DataFrame(interpretation_rows)
+
+print("\n============================================================")
+print("PARAMETER INTERPRETATION")
+print("============================================================")
+print(parameter_interpretation)
+
+# ------------------------------------------------------------
+# 5. Persistence and half-life
+# ------------------------------------------------------------
+
+persistence = np.nan
+half_life = np.nan
+long_run_variance = np.nan
+long_run_volatility = np.nan
+persistence_comment = ""
+
+if best_family == "GARCH":
+    persistence = alpha_sum + beta_sum
+
+    if 0 < persistence < 1:
+        half_life = np.log(0.5) / np.log(persistence)
+        long_run_variance = omega / (1 - persistence)
+        long_run_volatility = np.sqrt(long_run_variance)
+
+        persistence_comment = (
+            "Le processus de volatilité est stationnaire en variance, "
+            "mais la proximité éventuelle de la persistance à l'unité indique "
+            "une forte mémoire des chocs."
+        )
+
+    elif persistence >= 1:
+        persistence_comment = (
+            "La somme alpha + beta est supérieure ou égale à l'unité, "
+            "ce qui indique une volatilité extrêmement persistante ou proche "
+            "de la non-stationnarité."
+        )
+    else:
+        persistence_comment = (
+            "La persistance estimée est faible ou non interprétable."
+        )
+
+elif best_family == "GJR-GARCH":
+    persistence = alpha_sum + 0.5 * gamma_sum + beta_sum
+
+    if 0 < persistence < 1:
+        half_life = np.log(0.5) / np.log(persistence)
+        long_run_variance = omega / (1 - persistence)
+        long_run_volatility = np.sqrt(long_run_variance)
+
+        persistence_comment = (
+            "La persistance ajustée du modèle GJR-GARCH est inférieure à l'unité, "
+            "ce qui indique une dynamique de volatilité stationnaire sous l'hypothèse "
+            "d'une occurrence symétrique des chocs positifs et négatifs."
+        )
+    elif persistence >= 1:
+        persistence_comment = (
+            "La persistance ajustée du modèle GJR-GARCH est supérieure ou égale à l'unité, "
+            "ce qui suggère une volatilité très persistante."
+        )
+    else:
+        persistence_comment = (
+            "La persistance ajustée est faible ou non interprétable."
+        )
+
+elif best_family == "EGARCH":
+    persistence = beta_sum
+
+    if abs(persistence) < 1:
+        half_life = np.log(0.5) / np.log(abs(persistence)) if abs(persistence) > 0 else np.nan
+        persistence_comment = (
+            "Dans le modèle EGARCH, la persistance est principalement captée par le coefficient beta. "
+            "Une valeur inférieure à l'unité en valeur absolue indique une dynamique stable "
+            "de la variance logarithmique."
+        )
+    else:
+        persistence_comment = (
+            "Le coefficient beta du modèle EGARCH indique une persistance très élevée "
+            "de la variance logarithmique."
+        )
+
+print("\n============================================================")
+print("VOLATILITY PERSISTENCE")
+print("============================================================")
+print(f"Alpha sum                 : {alpha_sum:.6f}")
+print(f"Beta sum                  : {beta_sum:.6f}")
+print(f"Gamma sum                 : {gamma_sum:.6f}")
+print(f"Persistence measure       : {persistence:.6f}")
+print(f"Half-life                 : {half_life:.4f} days")
+print(f"Long-run variance         : {long_run_variance}")
+print(f"Long-run volatility       : {long_run_volatility}")
+print("Interpretation            :", persistence_comment)
+
+# ------------------------------------------------------------
+# 6. Asymmetry interpretation
+# ------------------------------------------------------------
+
+asymmetry_comment = "Non applicable pour un modèle GARCH symétrique."
+
+if best_family == "GJR-GARCH":
+    if gamma_sum > 0:
+        asymmetry_comment = (
+            "Le coefficient gamma est positif. Cela signifie que les chocs négatifs "
+            "augmentent davantage la volatilité future que les chocs positifs de même amplitude."
+        )
+    elif gamma_sum < 0:
+        asymmetry_comment = (
+            "Le coefficient gamma est négatif. Cela suggère que les chocs négatifs "
+            "ont un effet plus faible que les chocs positifs sur la volatilité future."
+        )
+    else:
+        asymmetry_comment = (
+            "Le coefficient gamma est nul ou très proche de zéro, ce qui ne permet pas "
+            "d'identifier un effet asymétrique marqué."
+        )
+
+elif best_family == "EGARCH":
+    if gamma_sum < 0:
+        asymmetry_comment = (
+            "Le coefficient d'asymétrie est négatif. Cela indique que les chocs négatifs "
+            "accroissent davantage la volatilité que les chocs positifs."
+        )
+    elif gamma_sum > 0:
+        asymmetry_comment = (
+            "Le coefficient d'asymétrie est positif. Cela suggère que les chocs positifs "
+            "ont un effet plus important sur la volatilité que les chocs négatifs."
+        )
+    else:
+        asymmetry_comment = (
+            "Le coefficient d'asymétrie est proche de zéro, ce qui indique l'absence "
+            "d'asymétrie significative."
+        )
+
+print("\n============================================================")
+print("ASYMMETRY INTERPRETATION")
+print("============================================================")
+print(asymmetry_comment)
+
+# ------------------------------------------------------------
+# 7. Out-of-sample performance interpretation
+# ------------------------------------------------------------
+
+mse = performance.loc[0, "MSE"]
+rmse = performance.loc[0, "RMSE"]
+mae = performance.loc[0, "MAE"]
+qlike = performance.loc[0, "QLIKE"]
+n_test = performance.loc[0, "N_test"]
+
+print("\n============================================================")
+print("OUT-OF-SAMPLE PERFORMANCE")
+print("============================================================")
+print(f"MSE     : {mse:.8f}")
+print(f"RMSE    : {rmse:.8f}")
+print(f"MAE     : {mae:.8f}")
+print(f"QLIKE   : {qlike:.8f}")
+print(f"N_test  : {n_test}")
+
+performance_comment = (
+    "Le RMSE mesure l'erreur quadratique moyenne dans la même unité que la volatilité, "
+    "tandis que le MAE mesure l'écart absolu moyen entre la volatilité prédite et le proxy |r_t|. "
+    "Le QLIKE constitue le critère principal pour juger la qualité de la prévision de variance : "
+    "plus sa valeur est faible, meilleure est la performance du modèle."
+)
+
+print("\nInterpretation:")
+print(performance_comment)
+
+# ------------------------------------------------------------
+# 8. Residual diagnostics using standardized residual approximation
+# ------------------------------------------------------------
+
+# Approximate standardized residuals:
+# z_t = (r_t - mu) / sigma_t
+# This works because conditional volatility was saved in the previous output.
+
+if "best_garch_cond_vol" not in train_df.columns:
+    raise ValueError("Column 'best_garch_cond_vol' not found in InSample_ConditionalVol sheet.")
+
+train_df["std_resid_approx"] = (train_df["ret"] - mu) / train_df["best_garch_cond_vol"]
+std_resid = train_df["std_resid_approx"].replace([np.inf, -np.inf], np.nan).dropna()
+
+# Ljung-Box test on standardized residuals
+lb_resid = acorr_ljungbox(std_resid, lags=[10, 20], return_df=True)
+
+# Ljung-Box test on squared standardized residuals
+lb_squared = acorr_ljungbox(std_resid ** 2, lags=[10, 20], return_df=True)
+
+# ARCH-LM test on standardized residuals
+arch_lm_stat, arch_lm_pvalue, arch_f_stat, arch_f_pvalue = het_arch(std_resid, nlags=10)
+
+print("\n============================================================")
+print("RESIDUAL DIAGNOSTICS")
+print("============================================================")
+
+print("\nLjung-Box test on standardized residuals:")
+print(lb_resid)
+
+print("\nLjung-Box test on squared standardized residuals:")
+print(lb_squared)
+
+print("\nARCH-LM test on standardized residuals:")
+print(f"ARCH-LM statistic : {arch_lm_stat:.6f}")
+print(f"ARCH-LM p-value   : {arch_lm_pvalue:.6f}")
+print(f"F-statistic       : {arch_f_stat:.6f}")
+print(f"F p-value         : {arch_f_pvalue:.6f}")
+
+# Interpretation of residual diagnostics
+
+if lb_resid["lb_pvalue"].iloc[-1] > 0.05:
+    lb_resid_comment = (
+        "Les résidus standardisés ne présentent pas d'autocorrélation significative "
+        "au seuil de 5 %, ce qui indique que la dynamique moyenne est correctement captée."
+    )
+else:
+    lb_resid_comment = (
+        "Les résidus standardisés présentent une autocorrélation significative, "
+        "ce qui suggère que le modèle ne capture pas entièrement la dynamique temporelle."
+    )
+
+if lb_squared["lb_pvalue"].iloc[-1] > 0.05 and arch_lm_pvalue > 0.05:
+    hetero_comment = (
+        "Les résidus standardisés au carré ne présentent pas d'effets ARCH résiduels significatifs. "
+        "Le modèle semble donc avoir absorbé l'essentiel de l'hétéroscédasticité conditionnelle."
+    )
+else:
+    hetero_comment = (
+        "Les tests indiquent la présence possible d'effets ARCH résiduels. "
+        "Cela suggère que le modèle GARCH-family retenu ne capture pas totalement la dynamique "
+        "de la volatilité, ce qui justifie l'utilisation d'un modèle LSTM ou hybride GARCH-LSTM."
+    )
+
+print("\nResidual interpretation:")
+print(lb_resid_comment)
+print(hetero_comment)
+
+# ------------------------------------------------------------
+# 9. Automatic dissertation-style interpretation
+# ------------------------------------------------------------
+
+if best_family == "GARCH":
+    family_sentence = (
+        "Le modèle retenu appartient à la famille GARCH symétrique. "
+        "Il permet principalement de capturer le regroupement de la volatilité "
+        "et la persistance de la variance conditionnelle."
+    )
+elif best_family == "EGARCH":
+    family_sentence = (
+        "Le modèle retenu appartient à la famille EGARCH. "
+        "Cette spécification est particulièrement adaptée à la modélisation de la variance logarithmique "
+        "et permet d'intégrer une réponse asymétrique de la volatilité aux chocs de marché."
+    )
+elif best_family == "GJR-GARCH":
+    family_sentence = (
+        "Le modèle retenu appartient à la famille GJR-GARCH. "
+        "Cette spécification permet de tester explicitement si les chocs négatifs exercent "
+        "un effet plus important sur la volatilité future que les chocs positifs."
+    )
+else:
+    family_sentence = ""
+
+latex_interpretation = f"""
+Le critère BIC conduit à retenir le modèle {best_name}, estimé avec une distribution {best_dist}.
+{family_sentence} La mesure de persistance obtenue est égale à {persistence:.4f}.
+{persistence_comment} Lorsque cette mesure est proche de l'unité, cela signifie que les chocs de volatilité
+se dissipent lentement et que le marché présente une forte mémoire conditionnelle du risque.
+
+{asymmetry_comment}
+
+Sur le plan prédictif, la performance hors échantillon du modèle est évaluée à partir du proxy de volatilité $|r_t|$.
+Les valeurs obtenues sont les suivantes : RMSE = {rmse:.6f}, MAE = {mae:.6f} et QLIKE = {qlike:.6f}.
+Le QLIKE étant le critère principal de comparaison des prévisions de volatilité, une valeur plus faible indique
+une meilleure qualité de prévision de la variance conditionnelle.
+
+Les diagnostics sur les résidus standardisés montrent que : {lb_resid_comment} {hetero_comment}
+Ainsi, si des effets ARCH résiduels persistent ou si les prévisions apparaissent trop lisses face aux pics de volatilité,
+le recours à un modèle LSTM ou hybride GARCH--LSTM est méthodologiquement justifié.
+"""
+
+print("\n============================================================")
+print("DISSERTATION-STYLE INTERPRETATION")
+print("============================================================")
+print(latex_interpretation)
+
+# ------------------------------------------------------------
+# 10. Save interpretation results
+# ------------------------------------------------------------
+
+summary_table = pd.DataFrame({
+    "Item": [
+        "Best_Model",
+        "Family",
+        "Distribution",
+        "AIC",
+        "BIC",
+        "Alpha_sum",
+        "Beta_sum",
+        "Gamma_sum",
+        "Persistence",
+        "Half_life_days",
+        "Long_run_variance",
+        "Long_run_volatility",
+        "MSE",
+        "RMSE",
+        "MAE",
+        "QLIKE",
+        "LjungBox_resid_pvalue_lag20",
+        "LjungBox_squared_pvalue_lag20",
+        "ARCH_LM_pvalue"
+    ],
+    "Value": [
+        best_name,
+        best_family,
+        best_dist,
+        best_aic,
+        best_bic,
+        alpha_sum,
+        beta_sum,
+        gamma_sum,
+        persistence,
+        half_life,
+        long_run_variance,
+        long_run_volatility,
+        mse,
+        rmse,
+        mae,
+        qlike,
+        lb_resid["lb_pvalue"].iloc[-1],
+        lb_squared["lb_pvalue"].iloc[-1],
+        arch_lm_pvalue
+    ]
+})
+
+OUTPUT_EXCEL = "Best_GARCH_mathematical_interpretation.xlsx"
+OUTPUT_TEXT = "Best_GARCH_dissertation_interpretation.txt"
+
+with pd.ExcelWriter(OUTPUT_EXCEL, engine="openpyxl") as writer:
+    best_model.to_excel(writer, sheet_name="Best_Model", index=False)
+    model_params.to_excel(writer, sheet_name="Raw_Parameters", index=False)
+    parameter_interpretation.to_excel(writer, sheet_name="Parameter_Interpretation", index=False)
+    summary_table.to_excel(writer, sheet_name="Mathematical_Summary", index=False)
+    performance.to_excel(writer, sheet_name="Forecast_Performance", index=False)
+    lb_resid.to_excel(writer, sheet_name="LjungBox_Residuals")
+    lb_squared.to_excel(writer, sheet_name="LjungBox_Squared")
+    train_df.to_excel(writer, sheet_name="Std_Residuals", index=False)
+
+with open(OUTPUT_TEXT, "w", encoding="utf-8") as f:
+    f.write(latex_interpretation)
+
+print("\n============================================================")
+print("FILES SAVED")
+print("============================================================")
+print(f"Excel interpretation saved as : {OUTPUT_EXCEL}")
+print(f"Text interpretation saved as  : {OUTPUT_TEXT}")
+
+
+
+
+# ============================================================
+# STEP 5 : ESTIMATION DU MODÈLE LSTM POUR LA VOLATILITÉ MASI
+# ============================================================
+# Objectif :
+#   - Construire un modèle LSTM standalone
+#   - Prévoir la volatilité proxy |r_t|
+#   - Respecter le split chronologique 80/20
+#   - Utiliser une validation séquentielle de 10%
+#   - Look-back period = 20 jours
+#   - Évaluer avec MSE, RMSE, MAE, QLIKE
+# ============================================================
+
+import os
+import random
+import warnings
+warnings.filterwarnings("ignore")
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import mean_squared_error, mean_absolute_error
+
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Input, LSTM, Dense, Dropout
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
+from tensorflow.keras.optimizers import Adam
+
+
+# ============================================================
+# 0. REPRODUCTIBILITÉ
+# ============================================================
+
+RANDOM_SEED = 42
+
+os.environ["PYTHONHASHSEED"] = str(RANDOM_SEED)
+random.seed(RANDOM_SEED)
+np.random.seed(RANDOM_SEED)
+tf.random.set_seed(RANDOM_SEED)
+
+
+# ============================================================
+# 1. CHARGEMENT DES DONNÉES
+# ============================================================
+
+# Ce fichier doit provenir des étapes précédentes.
+# Il contient au minimum : Date, ret, abs_ret
+DATA_FILE = "Step4_GARCH_volatility_inputs.xlsx"
+
+df = pd.read_excel(DATA_FILE, engine="openpyxl")
+df["Date"] = pd.to_datetime(df["Date"])
+df = df.sort_values("Date").reset_index(drop=True)
+
+required_cols = ["Date", "ret", "abs_ret"]
+for col in required_cols:
+    if col not in df.columns:
+        raise ValueError(f"La colonne requise '{col}' est absente du fichier.")
+
+df["ret"] = pd.to_numeric(df["ret"], errors="coerce")
+df["abs_ret"] = pd.to_numeric(df["abs_ret"], errors="coerce")
+
+df = df.dropna(subset=["Date", "ret", "abs_ret"]).reset_index(drop=True)
+
+print("Données chargées avec succès.")
+print("Dimensions :", df.shape)
+print("Période :", df["Date"].min().date(), "à", df["Date"].max().date())
+print(df.head())
+
+
+# ============================================================
+# 2. PARAMÈTRES MÉTHODOLOGIQUES
+# ============================================================
+
+TRAIN_RATIO = 0.80
+VALIDATION_RATIO = 0.10
+
+LOOKBACK = 20
+
+FEATURE_COLS = ["ret", "abs_ret"]
+TARGET_COL = "abs_ret"
+
+EPOCHS = 150
+BATCH_SIZE = 32
+LEARNING_RATE = 0.001
+
+DROPOUT_1 = 0.20
+DROPOUT_2 = 0.20
+
+LSTM_UNITS_1 = 64
+LSTM_UNITS_2 = 32
+DENSE_UNITS = 16
+
+split_idx = int(len(df) * TRAIN_RATIO)
+
+print("\nDécoupage chronologique :")
+print("Total observations :", len(df))
+print("Train + validation :", split_idx)
+print("Test out-of-sample :", len(df) - split_idx)
+print("Date début test :", df.loc[split_idx, "Date"].date())
+
+
+# ============================================================
+# 3. NORMALISATION SANS FUITE D'INFORMATION
+# ============================================================
+
+features_raw = df[FEATURE_COLS].astype(float).values
+target_raw = df[[TARGET_COL]].astype(float).values
+
+feature_scaler = StandardScaler()
+target_scaler = StandardScaler()
+
+# Important : fit uniquement sur l'échantillon d'apprentissage
+feature_scaler.fit(features_raw[:split_idx])
+target_scaler.fit(target_raw[:split_idx])
+
+features_scaled = feature_scaler.transform(features_raw)
+target_scaled = target_scaler.transform(target_raw).flatten()
+
+print("\nNormalisation effectuée uniquement sur l'échantillon in-sample.")
+
+
+# ============================================================
+# 4. CONSTRUCTION DES SÉQUENCES LSTM
+# ============================================================
+
+def create_lstm_sequences(features, target, lookback):
+    """
+    Crée les séquences LSTM :
+        X_t = [X_{t-lookback}, ..., X_{t-1}]
+        y_t = target_t
+    """
+    X, y, indices = [], [], []
+
+    for t in range(lookback, len(features)):
+        X.append(features[t - lookback:t])
+        y.append(target[t])
+        indices.append(t)
+
+    return np.array(X), np.array(y), np.array(indices)
+
+
+X_all, y_all, idx_all = create_lstm_sequences(
+    features=features_scaled,
+    target=target_scaled,
+    lookback=LOOKBACK
+)
+
+print("\nForme du tenseur complet X :", X_all.shape)
+print("Forme de la cible y        :", y_all.shape)
+print("Format LSTM attendu       : [observations, lookback, variables]")
+
+
+# ============================================================
+# 5. SPLIT TRAIN / VALIDATION / TEST
+# ============================================================
+
+train_mask = idx_all < split_idx
+test_mask = idx_all >= split_idx
+
+X_train_full = X_all[train_mask]
+y_train_full = y_all[train_mask]
+idx_train_full = idx_all[train_mask]
+
+X_test = X_all[test_mask]
+y_test = y_all[test_mask]
+idx_test = idx_all[test_mask]
+
+# Validation séquentielle : les derniers 10% du train
+val_start = int((1 - VALIDATION_RATIO) * len(X_train_full))
+
+X_train = X_train_full[:val_start]
+y_train = y_train_full[:val_start]
+idx_train = idx_train_full[:val_start]
+
+X_val = X_train_full[val_start:]
+y_val = y_train_full[val_start:]
+idx_val = idx_train_full[val_start:]
+
+print("\nDécoupage final des séquences :")
+print("X_train :", X_train.shape)
+print("X_val   :", X_val.shape)
+print("X_test  :", X_test.shape)
+
+
+# ============================================================
+# 6. CONSTRUCTION DU MODÈLE LSTM
+# ============================================================
+
+def build_lstm_model(input_shape):
+    """
+    Architecture LSTM standalone.
+    """
+    model = Sequential([
+        Input(shape=input_shape),
+
+        LSTM(LSTM_UNITS_1, return_sequences=True),
+        Dropout(DROPOUT_1),
+
+        LSTM(LSTM_UNITS_2, return_sequences=False),
+        Dropout(DROPOUT_2),
+
+        Dense(DENSE_UNITS, activation="relu"),
+        Dense(1, activation="linear")
+    ])
+
+    model.compile(
+        optimizer=Adam(learning_rate=LEARNING_RATE),
+        loss="mse",
+        metrics=["mae"]
+    )
+
+    return model
+
+
+input_shape = (X_train.shape[1], X_train.shape[2])
+model = build_lstm_model(input_shape=input_shape)
+
+print("\nRésumé du modèle LSTM :")
+model.summary()
+
+
+# Sauvegarde du résumé du modèle dans un fichier texte
+with open("Step5_LSTM_model_summary.txt", "w", encoding="utf-8") as f:
+    model.summary(print_fn=lambda x: f.write(x + "\n"))
+
+
+# ============================================================
+# 7. APPRENTISSAGE DU MODÈLE
+# ============================================================
+
+callbacks = [
+    EarlyStopping(
+        monitor="val_loss",
+        patience=20,
+        restore_best_weights=True,
+        verbose=1
+    ),
+    ReduceLROnPlateau(
+        monitor="val_loss",
+        factor=0.5,
+        patience=8,
+        min_lr=1e-6,
+        verbose=1
+    )
+]
+
+history = model.fit(
+    X_train,
+    y_train,
+    validation_data=(X_val, y_val),
+    epochs=EPOCHS,
+    batch_size=BATCH_SIZE,
+    callbacks=callbacks,
+    verbose=1,
+    shuffle=False
+)
+
+
+# ============================================================
+# 8. PRÉVISION HORS ÉCHANTILLON
+# ============================================================
+
+y_pred_scaled = model.predict(X_test, verbose=0)
+
+y_pred = target_scaler.inverse_transform(y_pred_scaled).flatten()
+y_true = target_scaler.inverse_transform(y_test.reshape(-1, 1)).flatten()
+
+# La volatilité prédite doit être non négative
+y_pred = np.maximum(y_pred, 1e-8)
+
+forecast_df = pd.DataFrame({
+    "Date": df.loc[idx_test, "Date"].values,
+    "Index": idx_test,
+    "Proxy_volatility_abs_ret": y_true,
+    "LSTM_forecast_volatility": y_pred
+})
+
+forecast_df["Forecast_error"] = (
+    forecast_df["Proxy_volatility_abs_ret"]
+    - forecast_df["LSTM_forecast_volatility"]
+)
+
+forecast_df["Absolute_error"] = forecast_df["Forecast_error"].abs()
+forecast_df["Squared_error"] = forecast_df["Forecast_error"] ** 2
+
+
+# ============================================================
+# 9. MÉTRIQUES DE PERFORMANCE
+# ============================================================
+
+def qlike_loss(y_true_vol, y_pred_vol):
+    """
+    QLIKE:
+        log(sigma_hat^2) + sigma_proxy^2 / sigma_hat^2
+    """
+    eps = 1e-10
+
+    true_var = np.maximum(np.asarray(y_true_vol) ** 2, eps)
+    pred_var = np.maximum(np.asarray(y_pred_vol) ** 2, eps)
+
+    return np.mean(np.log(pred_var) + true_var / pred_var)
+
+
+mse = mean_squared_error(y_true, y_pred)
+rmse = np.sqrt(mse)
+mae = mean_absolute_error(y_true, y_pred)
+qlike = qlike_loss(y_true, y_pred)
+
+performance_lstm = pd.DataFrame({
+    "Model": ["Standalone_LSTM"],
+    "Lookback": [LOOKBACK],
+    "Features": [", ".join(FEATURE_COLS)],
+    "Target": [TARGET_COL],
+    "MSE": [mse],
+    "RMSE": [rmse],
+    "MAE": [mae],
+    "QLIKE": [qlike],
+    "N_test": [len(y_true)]
+})
+
+print("\n============================================================")
+print("Performance hors échantillon du modèle LSTM")
+print("============================================================")
+print(performance_lstm)
+
+
+# ============================================================
+# 10. HISTORIQUE D'APPRENTISSAGE
+# ============================================================
+
+history_df = pd.DataFrame(history.history)
+history_df["epoch"] = np.arange(1, len(history_df) + 1)
+
+final_epoch = history_df["epoch"].iloc[-1]
+best_val_epoch = history_df.loc[history_df["val_loss"].idxmin(), "epoch"]
+best_val_loss = history_df["val_loss"].min()
+
+print("\nRésumé apprentissage :")
+print("Nombre d'epochs effectués :", final_epoch)
+print("Meilleur epoch validation :", best_val_epoch)
+print("Meilleure val_loss        :", best_val_loss)
+
+
+# ============================================================
+# 11. TABLE DE CONFIGURATION
+# ============================================================
+
+config_table = pd.DataFrame({
+    "Élément": [
+        "Variables explicatives",
+        "Variable cible",
+        "Look-back period",
+        "Première couche LSTM",
+        "Deuxième couche LSTM",
+        "Dropout 1",
+        "Dropout 2",
+        "Couche dense",
+        "Optimiseur",
+        "Fonction de perte",
+        "Learning rate",
+        "Batch size",
+        "Epochs maximum",
+        "Early stopping patience",
+        "Validation",
+        "Split test"
+    ],
+    "Valeur": [
+        ", ".join(FEATURE_COLS),
+        TARGET_COL,
+        LOOKBACK,
+        LSTM_UNITS_1,
+        LSTM_UNITS_2,
+        DROPOUT_1,
+        DROPOUT_2,
+        DENSE_UNITS,
+        "Adam",
+        "MSE",
+        LEARNING_RATE,
+        BATCH_SIZE,
+        EPOCHS,
+        20,
+        "10% séquentiel du train",
+        "20% final de l'échantillon"
+    ]
+})
+
+
+# ============================================================
+# 12. SAUVEGARDE DES RÉSULTATS EXCEL
+# ============================================================
+
+OUTPUT_FILE = "Step5_LSTM_results.xlsx"
+
+with pd.ExcelWriter(OUTPUT_FILE, engine="openpyxl") as writer:
+    config_table.to_excel(writer, sheet_name="LSTM_Config", index=False)
+    history_df.to_excel(writer, sheet_name="Training_History", index=False)
+    forecast_df.to_excel(writer, sheet_name="LSTM_Forecasts", index=False)
+    performance_lstm.to_excel(writer, sheet_name="LSTM_Performance", index=False)
+
+print(f"\nRésultats sauvegardés dans : {OUTPUT_FILE}")
+
+
+# ============================================================
+# 13. EXPORT LATEX DES TABLEAUX
+# ============================================================
+
+config_table.to_latex(
+    "Step5_LSTM_config_table.tex",
+    index=False,
+    escape=False,
+    caption="Configuration du modèle LSTM standalone",
+    label="tab:lstm_config"
+)
+
+performance_lstm.to_latex(
+    "Step5_LSTM_performance_table.tex",
+    index=False,
+    escape=False,
+    float_format="%.6f",
+    caption="Performance hors échantillon du modèle LSTM",
+    label="tab:lstm_performance"
+)
+
+
+# ============================================================
+# 14. FIGURE 1 : COURBES D'APPRENTISSAGE
+# ============================================================
+
+plt.figure(figsize=(10, 5))
+
+plt.plot(
+    history_df["epoch"],
+    history_df["loss"],
+    label="Training loss",
+    linewidth=1.5
+)
+
+plt.plot(
+    history_df["epoch"],
+    history_df["val_loss"],
+    label="Validation loss",
+    linewidth=1.5
+)
+
+plt.axvline(
+    best_val_epoch,
+    linestyle="--",
+    color="red",
+    linewidth=1,
+    label=f"Best val epoch = {best_val_epoch}"
+)
+
+plt.title("Courbes d'apprentissage du modèle LSTM")
+plt.xlabel("Epoch")
+plt.ylabel("MSE loss")
+plt.legend()
+plt.tight_layout()
+plt.savefig("Step5_LSTM_learning_curve.png", dpi=300)
+plt.show()
+
+
+# ============================================================
+# 15. FIGURE 2 : PRÉVISION VS PROXY DE VOLATILITÉ
+# ============================================================
+
+plt.figure(figsize=(14, 6))
+
+plt.plot(
+    forecast_df["Date"],
+    forecast_df["Proxy_volatility_abs_ret"],
+    label="Proxy de volatilité |r_t|",
+    linewidth=0.8,
+    color="black",
+    alpha=0.85
+)
+
+plt.plot(
+    forecast_df["Date"],
+    forecast_df["LSTM_forecast_volatility"],
+    label="Prévision LSTM",
+    linewidth=1.2,
+    color="darkorange"
+)
+
+plt.title("Prévision hors échantillon de la volatilité par LSTM")
+plt.xlabel("Date")
+plt.ylabel("Volatilité (%)")
+plt.legend()
+plt.tight_layout()
+plt.savefig("Step5_LSTM_forecast_vs_proxy.png", dpi=300)
+plt.show()
+
+
+# ============================================================
+# 16. FIGURE 3 : ERREURS DE PRÉVISION
+# ============================================================
+
+plt.figure(figsize=(14, 5))
+
+plt.plot(
+    forecast_df["Date"],
+    forecast_df["Forecast_error"],
+    linewidth=0.8,
+    color="purple"
+)
+
+plt.axhline(0, color="black", linewidth=0.8)
+
+plt.title("Erreurs de prévision du modèle LSTM")
+plt.xlabel("Date")
+plt.ylabel("Erreur : proxy - prévision")
+plt.tight_layout()
+plt.savefig("Step5_LSTM_forecast_errors.png", dpi=300)
+plt.show()
+
+
+# ============================================================
+# 17. CONCLUSION AUTOMATIQUE
+# ============================================================
+
+print("\n============================================================")
+print("CONCLUSION AUTOMATIQUE - LSTM")
+print("============================================================")
+
+print(f"Le modèle LSTM utilise un look-back de {LOOKBACK} jours.")
+print(f"RMSE  : {rmse:.6f}")
+print(f"MAE   : {mae:.6f}")
+print(f"QLIKE : {qlike:.6f}")
+
+print("""
+Interprétation :
+- Si la courbe de validation diminue puis se stabilise, l'apprentissage est stable.
+- Si la validation loss remonte alors que la training loss continue de baisser,
+  le modèle commence à surapprendre.
+- Si la prévision LSTM suit les régimes de forte et faible volatilité,
+  le modèle apprend correctement la dynamique séquentielle de |r_t|.
+- Les résultats doivent être comparés au benchmark GARCH(1,2)-t
+  et au modèle hybride GARCH-LSTM.
+""")
+
+
+
+# ============================================================
+# STEP 6 : HYBRID GARCH-LSTM MODEL FOR MASI VOLATILITY
+# ============================================================
+# Objectif :
+#   - Construire un modèle hybride GARCH-LSTM
+#   - Utiliser la volatilité conditionnelle GARCH comme input
+#   - Prévoir le proxy de volatilité |r_t|
+#   - Comparer Hybrid vs GARCH vs LSTM
+#   - Évaluer avec MSE, RMSE, MAE, QLIKE
+#   - Appliquer le test de Diebold-Mariano
+# ============================================================
+
+import os
+import random
+import warnings
+warnings.filterwarnings("ignore")
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import mean_squared_error, mean_absolute_error
+
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Input, LSTM, Dense, Dropout
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
+from tensorflow.keras.optimizers import Adam
+
+from scipy import stats
+
+
+# ============================================================
+# 0. REPRODUCTIBILITÉ
+# ============================================================
+
+RANDOM_SEED = 42
+
+os.environ["PYTHONHASHSEED"] = str(RANDOM_SEED)
+random.seed(RANDOM_SEED)
+np.random.seed(RANDOM_SEED)
+tf.random.set_seed(RANDOM_SEED)
+
+
+# ============================================================
+# 1. CHARGEMENT DES DONNÉES
+# ============================================================
+
+DATA_FILE = "Step4_GARCH_volatility_inputs.xlsx"
+
+df = pd.read_excel(DATA_FILE, engine="openpyxl")
+df["Date"] = pd.to_datetime(df["Date"])
+df = df.sort_values("Date").reset_index(drop=True)
+
+required_cols = ["Date", "ret", "abs_ret", "selected_garch_vol"]
+
+for col in required_cols:
+    if col not in df.columns:
+        raise ValueError(f"La colonne requise '{col}' est absente du fichier.")
+
+df["ret"] = pd.to_numeric(df["ret"], errors="coerce")
+df["abs_ret"] = pd.to_numeric(df["abs_ret"], errors="coerce")
+df["selected_garch_vol"] = pd.to_numeric(df["selected_garch_vol"], errors="coerce")
+
+df = df.dropna(subset=required_cols).reset_index(drop=True)
+
+print("Données chargées avec succès.")
+print("Dimensions :", df.shape)
+print("Période :", df["Date"].min().date(), "à", df["Date"].max().date())
+print(df.head())
+
+
+# ============================================================
+# 2. PARAMÈTRES MÉTHODOLOGIQUES
+# ============================================================
+
+TRAIN_RATIO = 0.80
+VALIDATION_RATIO = 0.10
+
+LOOKBACK = 20
+
+FEATURE_COLS = ["ret", "abs_ret", "selected_garch_vol"]
+TARGET_COL = "abs_ret"
+
+EPOCHS = 150
+BATCH_SIZE = 32
+LEARNING_RATE = 0.001
+
+DROPOUT_1 = 0.20
+DROPOUT_2 = 0.20
+
+LSTM_UNITS_1 = 64
+LSTM_UNITS_2 = 32
+DENSE_UNITS = 16
+
+split_idx = int(len(df) * TRAIN_RATIO)
+
+print("\nDécoupage chronologique :")
+print("Total observations :", len(df))
+print("Train + validation :", split_idx)
+print("Test out-of-sample :", len(df) - split_idx)
+print("Date début test :", df.loc[split_idx, "Date"].date())
+
+
+# ============================================================
+# 3. NORMALISATION SANS FUITE D'INFORMATION
+# ============================================================
+
+features_raw = df[FEATURE_COLS].astype(float).values
+target_raw = df[[TARGET_COL]].astype(float).values
+
+feature_scaler = StandardScaler()
+target_scaler = StandardScaler()
+
+# Fit uniquement sur l'échantillon d'apprentissage
+feature_scaler.fit(features_raw[:split_idx])
+target_scaler.fit(target_raw[:split_idx])
+
+features_scaled = feature_scaler.transform(features_raw)
+target_scaled = target_scaler.transform(target_raw).flatten()
+
+print("\nNormalisation effectuée uniquement sur l'échantillon in-sample.")
+
+
+# ============================================================
+# 4. CRÉATION DES SÉQUENCES LSTM
+# ============================================================
+
+def create_lstm_sequences(features, target, lookback):
+    """
+    Crée les séquences LSTM :
+        X_t = [X_{t-lookback}, ..., X_{t-1}]
+        y_t = target_t
+    """
+    X, y, indices = [], [], []
+
+    for t in range(lookback, len(features)):
+        X.append(features[t - lookback:t])
+        y.append(target[t])
+        indices.append(t)
+
+    return np.array(X), np.array(y), np.array(indices)
+
+
+X_all, y_all, idx_all = create_lstm_sequences(
+    features=features_scaled,
+    target=target_scaled,
+    lookback=LOOKBACK
+)
+
+print("\nForme du tenseur complet X :", X_all.shape)
+print("Forme de la cible y        :", y_all.shape)
+print("Format attendu LSTM       : [observations, lookback, variables]")
+
+
+# ============================================================
+# 5. SPLIT TRAIN / VALIDATION / TEST
+# ============================================================
+
+train_mask = idx_all < split_idx
+test_mask = idx_all >= split_idx
+
+X_train_full = X_all[train_mask]
+y_train_full = y_all[train_mask]
+idx_train_full = idx_all[train_mask]
+
+X_test = X_all[test_mask]
+y_test = y_all[test_mask]
+idx_test = idx_all[test_mask]
+
+# Validation séquentielle : derniers 10% du train
+val_start = int((1 - VALIDATION_RATIO) * len(X_train_full))
+
+X_train = X_train_full[:val_start]
+y_train = y_train_full[:val_start]
+idx_train = idx_train_full[:val_start]
+
+X_val = X_train_full[val_start:]
+y_val = y_train_full[val_start:]
+idx_val = idx_train_full[val_start:]
+
+print("\nDécoupage final des séquences :")
+print("X_train :", X_train.shape)
+print("X_val   :", X_val.shape)
+print("X_test  :", X_test.shape)
+
+
+# ============================================================
+# 6. CONSTRUCTION DU MODÈLE HYBRIDE GARCH-LSTM
+# ============================================================
+
+def build_hybrid_lstm_model(input_shape):
+    """
+    Architecture hybride GARCH-LSTM.
+    """
+    model = Sequential([
+        Input(shape=input_shape),
+
+        LSTM(LSTM_UNITS_1, return_sequences=True),
+        Dropout(DROPOUT_1),
+
+        LSTM(LSTM_UNITS_2, return_sequences=False),
+        Dropout(DROPOUT_2),
+
+        Dense(DENSE_UNITS, activation="relu"),
+        Dense(1, activation="linear")
+    ])
+
+    model.compile(
+        optimizer=Adam(learning_rate=LEARNING_RATE),
+        loss="mse",
+        metrics=["mae"]
+    )
+
+    return model
+
+
+input_shape = (X_train.shape[1], X_train.shape[2])
+hybrid_model = build_hybrid_lstm_model(input_shape=input_shape)
+
+print("\nRésumé du modèle hybride GARCH-LSTM :")
+hybrid_model.summary()
+
+with open("Step6_Hybrid_GARCH_LSTM_model_summary.txt", "w", encoding="utf-8") as f:
+    hybrid_model.summary(print_fn=lambda x: f.write(x + "\n"))
+
+
+# ============================================================
+# 7. APPRENTISSAGE DU MODÈLE HYBRIDE
+# ============================================================
+
+callbacks = [
+    EarlyStopping(
+        monitor="val_loss",
+        patience=20,
+        restore_best_weights=True,
+        verbose=1
+    ),
+    ReduceLROnPlateau(
+        monitor="val_loss",
+        factor=0.5,
+        patience=8,
+        min_lr=1e-6,
+        verbose=1
+    )
+]
+
+history = hybrid_model.fit(
+    X_train,
+    y_train,
+    validation_data=(X_val, y_val),
+    epochs=EPOCHS,
+    batch_size=BATCH_SIZE,
+    callbacks=callbacks,
+    verbose=1,
+    shuffle=False
+)
+
+
+# ============================================================
+# 8. PRÉVISIONS HORS ÉCHANTILLON
+# ============================================================
+
+y_pred_scaled = hybrid_model.predict(X_test, verbose=0)
+
+y_pred = target_scaler.inverse_transform(y_pred_scaled).flatten()
+y_true = target_scaler.inverse_transform(y_test.reshape(-1, 1)).flatten()
+
+# Volatilité non négative
+y_pred = np.maximum(y_pred, 1e-8)
+
+hybrid_forecast_df = pd.DataFrame({
+    "Date": df.loc[idx_test, "Date"].values,
+    "Index": idx_test,
+    "Proxy_volatility_abs_ret": y_true,
+    "Hybrid_GARCH_LSTM_forecast_volatility": y_pred
+})
+
+hybrid_forecast_df["Forecast_error"] = (
+    hybrid_forecast_df["Proxy_volatility_abs_ret"]
+    - hybrid_forecast_df["Hybrid_GARCH_LSTM_forecast_volatility"]
+)
+
+hybrid_forecast_df["Absolute_error"] = hybrid_forecast_df["Forecast_error"].abs()
+hybrid_forecast_df["Squared_error"] = hybrid_forecast_df["Forecast_error"] ** 2
+
+
+# ============================================================
+# 9. MÉTRIQUES DE PERFORMANCE
+# ============================================================
+
+def qlike_loss(y_true_vol, y_pred_vol):
+    """
+    QLIKE:
+    log(sigma_hat^2) + sigma_proxy^2 / sigma_hat^2
+    """
+    eps = 1e-10
+
+    true_var = np.maximum(np.asarray(y_true_vol) ** 2, eps)
+    pred_var = np.maximum(np.asarray(y_pred_vol) ** 2, eps)
+
+    return np.mean(np.log(pred_var) + true_var / pred_var)
+
+
+def qlike_series(y_true_vol, y_pred_vol):
+    eps = 1e-10
+
+    true_var = np.maximum(np.asarray(y_true_vol) ** 2, eps)
+    pred_var = np.maximum(np.asarray(y_pred_vol) ** 2, eps)
+
+    return np.log(pred_var) + true_var / pred_var
+
+
+mse = mean_squared_error(y_true, y_pred)
+rmse = np.sqrt(mse)
+mae = mean_absolute_error(y_true, y_pred)
+qlike = qlike_loss(y_true, y_pred)
+
+performance_hybrid = pd.DataFrame({
+    "Model": ["Hybrid_GARCH_LSTM"],
+    "Lookback": [LOOKBACK],
+    "Features": [", ".join(FEATURE_COLS)],
+    "Target": [TARGET_COL],
+    "MSE": [mse],
+    "RMSE": [rmse],
+    "MAE": [mae],
+    "QLIKE": [qlike],
+    "N_test": [len(y_true)]
+})
+
+print("\n============================================================")
+print("Performance hors échantillon du modèle hybride GARCH-LSTM")
+print("============================================================")
+print(performance_hybrid)
+
+
+# ============================================================
+# 10. HISTORIQUE D'APPRENTISSAGE
+# ============================================================
+
+history_df = pd.DataFrame(history.history)
+history_df["epoch"] = np.arange(1, len(history_df) + 1)
+
+final_epoch = int(history_df["epoch"].iloc[-1])
+best_val_epoch = int(history_df.loc[history_df["val_loss"].idxmin(), "epoch"])
+best_val_loss = float(history_df["val_loss"].min())
+
+print("\nRésumé apprentissage hybride :")
+print("Nombre d'epochs effectués :", final_epoch)
+print("Meilleur epoch validation :", best_val_epoch)
+print("Meilleure val_loss        :", best_val_loss)
+
+
+# ============================================================
+# 11. TABLE DE CONFIGURATION
+# ============================================================
+
+config_table = pd.DataFrame({
+    "Élément": [
+        "Variables explicatives",
+        "Variable cible",
+        "Look-back period",
+        "Première couche LSTM",
+        "Deuxième couche LSTM",
+        "Dropout 1",
+        "Dropout 2",
+        "Couche dense",
+        "Optimiseur",
+        "Fonction de perte",
+        "Learning rate",
+        "Batch size",
+        "Epochs maximum",
+        "Early stopping patience",
+        "Validation",
+        "Split test"
+    ],
+    "Valeur": [
+        ", ".join(FEATURE_COLS),
+        TARGET_COL,
+        LOOKBACK,
+        LSTM_UNITS_1,
+        LSTM_UNITS_2,
+        DROPOUT_1,
+        DROPOUT_2,
+        DENSE_UNITS,
+        "Adam",
+        "MSE",
+        LEARNING_RATE,
+        BATCH_SIZE,
+        EPOCHS,
+        20,
+        "10% séquentiel du train",
+        "20% final de l'échantillon"
+    ]
+})
+
+
+# ============================================================
+# 12. COMPARAISON AVEC LES BENCHMARKS
+# ============================================================
+
+benchmark_tables = []
+
+# 12.1 LSTM standalone
+try:
+    lstm_perf = pd.read_excel(
+        "Step5_LSTM_results.xlsx",
+        sheet_name="LSTM_Performance",
+        engine="openpyxl"
+    )
+
+    lstm_perf = lstm_perf[["Model", "MSE", "RMSE", "MAE", "QLIKE", "N_test"]]
+    benchmark_tables.append(lstm_perf)
+
+except Exception as e:
+    print("Impossible de charger la performance LSTM :", e)
+
+
+# 12.2 GARCH benchmark
+try:
+    garch_perf = pd.read_excel(
+        "Best_GARCH_visual_diagnostics.xlsx",
+        sheet_name="OOS_Performance",
+        engine="openpyxl"
+    )
+
+    garch_perf = garch_perf[["Model", "MSE", "RMSE", "MAE", "QLIKE", "N_test"]]
+    benchmark_tables.append(garch_perf)
+
+except Exception as e:
+    print("Impossible de charger la performance GARCH :", e)
+
+
+# 12.3 Hybrid
+hybrid_perf_for_comparison = performance_hybrid[
+    ["Model", "MSE", "RMSE", "MAE", "QLIKE", "N_test"]
+]
+
+benchmark_tables.append(hybrid_perf_for_comparison)
+
+comparison_df = pd.concat(benchmark_tables, ignore_index=True)
+
+comparison_df = comparison_df.sort_values("QLIKE").reset_index(drop=True)
+
+print("\n============================================================")
+print("Comparaison des modèles selon QLIKE")
+print("============================================================")
+print(comparison_df)
+
+
+# ============================================================
+# 13. ALIGNEMENT DES PRÉVISIONS POUR TEST DM
+# ============================================================
+
+def prepare_date_column(dataframe, date_col="Date"):
+    df_temp = dataframe.copy()
+    df_temp[date_col] = pd.to_datetime(df_temp[date_col])
+    return df_temp
+
+
+dm_data = hybrid_forecast_df[
+    ["Date", "Proxy_volatility_abs_ret", "Hybrid_GARCH_LSTM_forecast_volatility"]
+].copy()
+
+dm_data = prepare_date_column(dm_data)
+
+# Merge LSTM forecasts
+try:
+    lstm_forecasts = pd.read_excel(
+        "Step5_LSTM_results.xlsx",
+        sheet_name="LSTM_Forecasts",
+        engine="openpyxl"
+    )
+
+    lstm_forecasts = prepare_date_column(lstm_forecasts)
+
+    lstm_forecasts = lstm_forecasts[
+        ["Date", "LSTM_forecast_volatility"]
+    ]
+
+    dm_data = dm_data.merge(lstm_forecasts, on="Date", how="left")
+
+except Exception as e:
+    print("Impossible de charger les prévisions LSTM pour DM :", e)
+
+
+# Merge GARCH forecasts
+try:
+    garch_forecasts = pd.read_excel(
+        "Best_GARCH_visual_diagnostics.xlsx",
+        sheet_name="OOS_Forecasts",
+        engine="openpyxl"
+    )
+
+    garch_forecasts = prepare_date_column(garch_forecasts)
+
+    garch_forecasts = garch_forecasts[
+        ["Date", "best_garch_forecast_vol"]
+    ]
+
+    dm_data = dm_data.merge(garch_forecasts, on="Date", how="left")
+
+except Exception as e:
+    print("Impossible de charger les prévisions GARCH pour DM :", e)
+
+
+# ============================================================
+# 14. TEST DE DIEBOLD-MARIANO
+# ============================================================
+
+def loss_series(y_true, y_pred, loss="qlike"):
+    if loss == "mse":
+        return (y_true - y_pred) ** 2
+
+    elif loss == "mae":
+        return np.abs(y_true - y_pred)
+
+    elif loss == "qlike":
+        return qlike_series(y_true, y_pred)
+
+    else:
+        raise ValueError("loss must be 'mse', 'mae', or 'qlike'.")
+
+
+def diebold_mariano_test(y_true, pred_1, pred_2, loss="qlike"):
+    """
+    Test de Diebold-Mariano.
+    H0 : les deux modèles ont la même précision prédictive.
+
+    d_t = L_1,t - L_2,t
+
+    Si mean(d_t) > 0, le modèle 2 est meilleur que le modèle 1.
+    """
+
+    y_true = np.asarray(y_true)
+    pred_1 = np.asarray(pred_1)
+    pred_2 = np.asarray(pred_2)
+
+    valid = (
+        np.isfinite(y_true)
+        & np.isfinite(pred_1)
+        & np.isfinite(pred_2)
+    )
+
+    y_true = y_true[valid]
+    pred_1 = pred_1[valid]
+    pred_2 = pred_2[valid]
+
+    l1 = loss_series(y_true, pred_1, loss=loss)
+    l2 = loss_series(y_true, pred_2, loss=loss)
+
+    d = l1 - l2
+
+    d_mean = np.mean(d)
+    d_var = np.var(d, ddof=1)
+    n = len(d)
+
+    dm_stat = d_mean / np.sqrt(d_var / n)
+    p_value = 2 * (1 - stats.norm.cdf(abs(dm_stat)))
+
+    return {
+        "loss": loss,
+        "n": n,
+        "mean_loss_diff": d_mean,
+        "DM_stat": dm_stat,
+        "p_value": p_value
+    }
+
+
+dm_results = []
+
+y_dm = dm_data["Proxy_volatility_abs_ret"].values
+hybrid_pred_dm = dm_data["Hybrid_GARCH_LSTM_forecast_volatility"].values
+
+if "LSTM_forecast_volatility" in dm_data.columns:
+    lstm_pred_dm = dm_data["LSTM_forecast_volatility"].values
+
+    for loss in ["mse", "mae", "qlike"]:
+        result = diebold_mariano_test(
+            y_true=y_dm,
+            pred_1=lstm_pred_dm,
+            pred_2=hybrid_pred_dm,
+            loss=loss
+        )
+
+        result["Comparison"] = "LSTM vs Hybrid"
+        dm_results.append(result)
+
+if "best_garch_forecast_vol" in dm_data.columns:
+    garch_pred_dm = dm_data["best_garch_forecast_vol"].values
+
+    for loss in ["mse", "mae", "qlike"]:
+        result = diebold_mariano_test(
+            y_true=y_dm,
+            pred_1=garch_pred_dm,
+            pred_2=hybrid_pred_dm,
+            loss=loss
+        )
+
+        result["Comparison"] = "GARCH vs Hybrid"
+        dm_results.append(result)
+
+dm_results_df = pd.DataFrame(dm_results)
+
+if not dm_results_df.empty:
+    dm_results_df = dm_results_df[
+        ["Comparison", "loss", "n", "mean_loss_diff", "DM_stat", "p_value"]
+    ]
+
+print("\n============================================================")
+print("Tests de Diebold-Mariano")
+print("============================================================")
+print(dm_results_df)
+
+
+# ============================================================
+# 15. SAUVEGARDE DES RÉSULTATS
+# ============================================================
+
+OUTPUT_FILE = "Step6_Hybrid_GARCH_LSTM_results.xlsx"
+
+with pd.ExcelWriter(OUTPUT_FILE, engine="openpyxl") as writer:
+    config_table.to_excel(writer, sheet_name="Hybrid_Config", index=False)
+    history_df.to_excel(writer, sheet_name="Training_History", index=False)
+    hybrid_forecast_df.to_excel(writer, sheet_name="Hybrid_Forecasts", index=False)
+    performance_hybrid.to_excel(writer, sheet_name="Hybrid_Performance", index=False)
+    comparison_df.to_excel(writer, sheet_name="Benchmark_Comparison", index=False)
+    dm_data.to_excel(writer, sheet_name="Forecasts_For_DM", index=False)
+    dm_results_df.to_excel(writer, sheet_name="DM_Tests", index=False)
+
+print(f"\nRésultats sauvegardés dans : {OUTPUT_FILE}")
+
+
+# ============================================================
+# 16. EXPORT LATEX DES TABLEAUX
+# ============================================================
+
+config_table.to_latex(
+    "Step6_Hybrid_config_table.tex",
+    index=False,
+    escape=False,
+    caption="Configuration du modèle hybride GARCH--LSTM",
+    label="tab:hybrid_config"
+)
+
+performance_hybrid.to_latex(
+    "Step6_Hybrid_performance_table.tex",
+    index=False,
+    escape=False,
+    float_format="%.6f",
+    caption="Performance hors échantillon du modèle hybride GARCH--LSTM",
+    label="tab:hybrid_performance"
+)
+
+comparison_df.to_latex(
+    "Step6_Benchmark_comparison_table.tex",
+    index=False,
+    escape=False,
+    float_format="%.6f",
+    caption="Comparaison des performances hors échantillon",
+    label="tab:benchmark_comparison"
+)
+
+dm_results_df.to_latex(
+    "Step6_DM_tests_table.tex",
+    index=False,
+    escape=False,
+    float_format="%.6f",
+    caption="Tests de Diebold--Mariano",
+    label="tab:dm_tests"
+)
+
+
+# ============================================================
+# 17. FIGURES
+# ============================================================
+
+# Figure 1 : learning curve
+plt.figure(figsize=(10, 5))
+
+plt.plot(
+    history_df["epoch"],
+    history_df["loss"],
+    label="Training loss",
+    linewidth=1.5
+)
+
+plt.plot(
+    history_df["epoch"],
+    history_df["val_loss"],
+    label="Validation loss",
+    linewidth=1.5
+)
+
+plt.axvline(
+    best_val_epoch,
+    linestyle="--",
+    color="red",
+    linewidth=1,
+    label=f"Best val epoch = {best_val_epoch}"
+)
+
+plt.title("Courbes d'apprentissage du modèle hybride GARCH-LSTM")
+plt.xlabel("Epoch")
+plt.ylabel("MSE loss")
+plt.legend()
+plt.tight_layout()
+plt.savefig("Step6_Hybrid_learning_curve.png", dpi=300)
+plt.show()
+
+
+# Figure 2 : forecast vs proxy
+plt.figure(figsize=(14, 6))
+
+plt.plot(
+    hybrid_forecast_df["Date"],
+    hybrid_forecast_df["Proxy_volatility_abs_ret"],
+    label="Proxy de volatilité |r_t|",
+    linewidth=0.8,
+    color="black",
+    alpha=0.85
+)
+
+plt.plot(
+    hybrid_forecast_df["Date"],
+    hybrid_forecast_df["Hybrid_GARCH_LSTM_forecast_volatility"],
+    label="Prévision hybride GARCH-LSTM",
+    linewidth=1.2,
+    color="red"
+)
+
+plt.title("Prévision hors échantillon de la volatilité par le modèle hybride GARCH-LSTM")
+plt.xlabel("Date")
+plt.ylabel("Volatilité (%)")
+plt.legend()
+plt.tight_layout()
+plt.savefig("Step6_Hybrid_forecast_vs_proxy.png", dpi=300)
+plt.show()
+
+
+# Figure 3 : benchmark comparison
+if not comparison_df.empty:
+    plt.figure(figsize=(10, 5))
+
+    plt.bar(
+        comparison_df["Model"],
+        comparison_df["QLIKE"],
+        color="skyblue"
+    )
+
+    plt.title("Comparaison des modèles selon QLIKE")
+    plt.xlabel("Modèle")
+    plt.ylabel("QLIKE")
+    plt.xticks(rotation=25, ha="right")
+    plt.tight_layout()
+    plt.savefig("Step6_Benchmark_QLIKE_comparison.png", dpi=300)
+    plt.show()
+
+
+# Figure 4 : Forecast errors
+plt.figure(figsize=(14, 5))
+
+plt.plot(
+    hybrid_forecast_df["Date"],
+    hybrid_forecast_df["Forecast_error"],
+    linewidth=0.8,
+    color="purple"
+)
+
+plt.axhline(0, color="black", linewidth=0.8)
+
+plt.title("Erreurs de prévision du modèle hybride GARCH-LSTM")
+plt.xlabel("Date")
+plt.ylabel("Erreur : proxy - prévision")
+plt.tight_layout()
+plt.savefig("Step6_Hybrid_forecast_errors.png", dpi=300)
+plt.show()
+
+
+# ============================================================
+# 18. CONCLUSION AUTOMATIQUE
+# ============================================================
+
+print("\n============================================================")
+print("CONCLUSION AUTOMATIQUE - HYBRID GARCH-LSTM")
+print("============================================================")
+
+print(f"Le modèle hybride utilise un look-back de {LOOKBACK} jours.")
+print(f"RMSE  : {rmse:.6f}")
+print(f"MAE   : {mae:.6f}")
+print(f"QLIKE : {qlike:.6f}")
+
+print("""
+Interprétation :
+- Le modèle hybride ajoute l'information de volatilité conditionnelle GARCH au LSTM.
+- S'il réduit RMSE et MAE par rapport au LSTM standalone, il améliore la précision moyenne.
+- S'il réduit QLIKE par rapport au GARCH, il améliore la prévision de variance.
+- Les tests de Diebold-Mariano permettent de vérifier si les gains sont statistiquement significatifs.
+""")
+
+
+
+
+# ============================================================
+# STEP 7 : ESTIMATION DE LA VALUE-AT-RISK
+# ============================================================
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.stats import t
+import warnings
+warnings.filterwarnings("ignore")
+
+# ------------------------------------------------------------
+# 1. Parameters from GARCH(1,2)-t
+# ------------------------------------------------------------
+
+MU = 0.027677
+NU = 4.706136
+
+CONFIDENCE_LEVELS = {
+    95: 0.05,
+    99: 0.01
+}
+
+TRAIN_RATIO = 0.80
+
+# ------------------------------------------------------------
+# 2. Load data
+# ------------------------------------------------------------
+
+STEP4_FILE = "Step4_GARCH_volatility_inputs.xlsx"
+LSTM_FILE = "Step5_LSTM_results.xlsx"
+HYBRID_FILE = "Step6_Hybrid_GARCH_LSTM_results.xlsx"
+
+df = pd.read_excel(STEP4_FILE, engine="openpyxl")
+df["Date"] = pd.to_datetime(df["Date"])
+df = df.sort_values("Date").reset_index(drop=True)
+
+lstm_df = pd.read_excel(LSTM_FILE, sheet_name="LSTM_Forecasts", engine="openpyxl")
+hybrid_df = pd.read_excel(HYBRID_FILE, sheet_name="Hybrid_Forecasts", engine="openpyxl")
+
+lstm_df["Date"] = pd.to_datetime(lstm_df["Date"])
+hybrid_df["Date"] = pd.to_datetime(hybrid_df["Date"])
+
+split_idx = int(len(df) * TRAIN_RATIO)
+
+test_df = df.iloc[split_idx:].copy()
+
+test_df = test_df[["Date", "ret", "abs_ret", "selected_garch_vol"]].rename(
+    columns={
+        "ret": "Return",
+        "abs_ret": "Abs_Return",
+        "selected_garch_vol": "Sigma_GARCH"
+    }
+)
+
+lstm_df = lstm_df[["Date", "LSTM_forecast_volatility"]].rename(
+    columns={"LSTM_forecast_volatility": "Sigma_LSTM"}
+)
+
+hybrid_df = hybrid_df[["Date", "Hybrid_GARCH_LSTM_forecast_volatility"]].rename(
+    columns={"Hybrid_GARCH_LSTM_forecast_volatility": "Sigma_Hybrid"}
+)
+
+var_df = (
+    test_df
+    .merge(lstm_df, on="Date", how="inner")
+    .merge(hybrid_df, on="Date", how="inner")
+)
+
+var_df = var_df.sort_values("Date").reset_index(drop=True)
+
+print("VaR dataset:", var_df.shape)
+print("Period:", var_df["Date"].min().date(), "to", var_df["Date"].max().date())
+
+# ------------------------------------------------------------
+# 3. Student-t standardized quantile
+# ------------------------------------------------------------
+
+def standardized_student_quantile(alpha, nu):
+    q_raw = t.ppf(alpha, df=nu)
+    scale = np.sqrt(nu / (nu - 2))
+    return q_raw / scale
+
+quantile_rows = []
+
+for confidence, alpha in CONFIDENCE_LEVELS.items():
+    q_alpha = standardized_student_quantile(alpha, NU)
+
+    quantile_rows.append({
+        "Confidence": confidence,
+        "Alpha": alpha,
+        "Student_df": NU,
+        "Standardized_Student_Quantile": q_alpha
+    })
+
+    for model, sigma_col in {
+        "GARCH": "Sigma_GARCH",
+        "LSTM": "Sigma_LSTM",
+        "Hybrid": "Sigma_Hybrid"
+    }.items():
+
+        var_col = f"VaR_{model}_{confidence}"
+        threshold_col = f"Threshold_{model}_{confidence}"
+        violation_col = f"Violation_{model}_{confidence}"
+
+        # Positive VaR as a loss amount
+        var_df[var_col] = - (MU + q_alpha * var_df[sigma_col])
+
+        # Return threshold
+        var_df[threshold_col] = - var_df[var_col]
+
+        # Violation when realized return is lower than threshold
+        var_df[violation_col] = (
+            var_df["Return"] < var_df[threshold_col]
+        ).astype(int)
+
+quantile_df = pd.DataFrame(quantile_rows)
+
+# ------------------------------------------------------------
+# 4. VaR summary table
+# ------------------------------------------------------------
+
+summary_rows = []
+
+for model in ["GARCH", "LSTM", "Hybrid"]:
+    for confidence, alpha in CONFIDENCE_LEVELS.items():
+
+        var_col = f"VaR_{model}_{confidence}"
+        violation_col = f"Violation_{model}_{confidence}"
+
+        summary_rows.append({
+            "Model": model,
+            "Confidence": confidence,
+            "Alpha": alpha,
+            "Mean_VaR": var_df[var_col].mean(),
+            "Median_VaR": var_df[var_col].median(),
+            "Min_VaR": var_df[var_col].min(),
+            "Max_VaR": var_df[var_col].max(),
+            "Observed_Violations": int(var_df[violation_col].sum()),
+            "Expected_Violations": alpha * len(var_df),
+            "Violation_Rate": var_df[violation_col].mean(),
+            "N_test": len(var_df)
+        })
+
+var_summary = pd.DataFrame(summary_rows)
+
+print("\nStudent quantiles:")
+print(quantile_df)
+
+print("\nVaR summary:")
+print(var_summary)
+
+# ------------------------------------------------------------
+# 5. Save results
+# ------------------------------------------------------------
+
+OUTPUT_FILE = "Step7_VaR_results.xlsx"
+
+with pd.ExcelWriter(OUTPUT_FILE, engine="openpyxl") as writer:
+    var_df.to_excel(writer, sheet_name="VaR_Forecasts", index=False)
+    var_summary.to_excel(writer, sheet_name="VaR_Summary", index=False)
+    quantile_df.to_excel(writer, sheet_name="Student_Quantiles", index=False)
+
+# ------------------------------------------------------------
+# 6. Export LaTeX tables
+# ------------------------------------------------------------
+
+var_garch_lstm = var_summary[var_summary["Model"].isin(["GARCH", "LSTM"])]
+var_hybrid = var_summary[var_summary["Model"] == "Hybrid"]
+
+var_garch_lstm.to_latex(
+    "Step7_VaR_GARCH_LSTM_table.tex",
+    index=False,
+    escape=False,
+    float_format="%.6f",
+    caption="Synthèse des VaR issues des modèles GARCH et LSTM",
+    label="tab:var_garch_lstm_summary"
+)
+
+var_hybrid.to_latex(
+    "Step7_VaR_Hybrid_table.tex",
+    index=False,
+    escape=False,
+    float_format="%.6f",
+    caption="Synthèse des VaR issues du modèle hybride GARCH--LSTM",
+    label="tab:var_hybrid_summary"
+)
+
+quantile_df.to_latex(
+    "Step7_Student_quantiles_table.tex",
+    index=False,
+    escape=False,
+    float_format="%.6f",
+    caption="Quantiles Student utilisés pour le calcul de la VaR",
+    label="tab:student_quantiles"
+)
+
+# ------------------------------------------------------------
+# 7. Figures
+# ------------------------------------------------------------
+
+def plot_var_thresholds(confidence):
+    plt.figure(figsize=(14, 6))
+
+    plt.plot(
+        var_df["Date"],
+        var_df["Return"],
+        label="Rendement réalisé",
+        color="black",
+        linewidth=0.7
+    )
+
+    for model in ["GARCH", "LSTM", "Hybrid"]:
+        plt.plot(
+            var_df["Date"],
+            var_df[f"Threshold_{model}_{confidence}"],
+            label=f"Seuil VaR {model} {confidence}%",
+            linewidth=1.1
+        )
+
+    plt.axhline(0, color="gray", linewidth=0.8)
+    plt.title(f"Rendements réalisés et seuils de VaR à {confidence}%")
+    plt.xlabel("Date")
+    plt.ylabel("Rendement / seuil de VaR (%)")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(f"Step7_VaR_thresholds_{confidence}.png", dpi=300)
+    plt.show()
+
+
+def plot_positive_var(confidence):
+    plt.figure(figsize=(14, 6))
+
+    for model in ["GARCH", "LSTM", "Hybrid"]:
+        plt.plot(
+            var_df["Date"],
+            var_df[f"VaR_{model}_{confidence}"],
+            label=f"VaR {model} {confidence}%",
+            linewidth=1.1
+        )
+
+    plt.title(f"Value-at-Risk positive à {confidence}%")
+    plt.xlabel("Date")
+    plt.ylabel("VaR positive (%)")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(f"Step7_Positive_VaR_{confidence}.png", dpi=300)
+    plt.show()
+
+
+plot_var_thresholds(95)
+plot_var_thresholds(99)
+
+plot_positive_var(95)
+plot_positive_var(99)
+
+print("\nStep 7 completed. Results saved in Step7_VaR_results.xlsx")
+
+
+
+
+# ============================================================
+# STEP 8 : BACKTESTING DE LA VALUE-AT-RISK
+# ============================================================
+# Objectif :
+#   - Tester la validité statistique des VaR estimées
+#   - Appliquer :
+#       1) Test de couverture inconditionnelle de Kupiec
+#       2) Test d'indépendance de Christoffersen
+#       3) Test de couverture conditionnelle
+#   - Modèles :
+#       GARCH(1,2)-t
+#       LSTM standalone
+#       Hybride GARCH-LSTM
+#   - Niveaux de confiance :
+#       95% et 99%
+# ============================================================
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.stats import chi2
+import warnings
+warnings.filterwarnings("ignore")
+
+
+# ============================================================
+# 1. Chargement des résultats VaR
+# ============================================================
+
+VAR_FILE = "Step7_VaR_results.xlsx"
+
+var_df = pd.read_excel(
+    VAR_FILE,
+    sheet_name="VaR_Forecasts",
+    engine="openpyxl"
+)
+
+var_summary = pd.read_excel(
+    VAR_FILE,
+    sheet_name="VaR_Summary",
+    engine="openpyxl"
+)
+
+# Nettoyage de la colonne Date
+if np.issubdtype(var_df["Date"].dtype, np.number):
+    var_df["Date"] = pd.to_datetime(
+        var_df["Date"],
+        unit="D",
+        origin="1899-12-30"
+    )
+else:
+    var_df["Date"] = pd.to_datetime(var_df["Date"])
+
+var_df = var_df.sort_values("Date").reset_index(drop=True)
+
+print("Données VaR chargées avec succès.")
+print("Dimensions :", var_df.shape)
+print("Période :", var_df["Date"].min().date(), "à", var_df["Date"].max().date())
+
+
+# ============================================================
+# 2. Paramètres généraux
+# ============================================================
+
+MODELS = ["GARCH", "LSTM", "Hybrid"]
+
+CONFIDENCE_LEVELS = {
+    95: 0.05,
+    99: 0.01
+}
+
+SIGNIFICANCE_LEVEL = 0.05
+
+
+# ============================================================
+# 3. Test de couverture inconditionnelle de Kupiec
+# ============================================================
+
+def kupiec_unconditional_coverage_test(violations, alpha):
+    """
+    Test de couverture inconditionnelle de Kupiec.
+
+    H0 : le taux empirique de violation est égal au niveau alpha.
+    """
+
+    violations = np.asarray(violations).astype(int)
+
+    T = len(violations)
+    N = int(violations.sum())
+    p_hat = N / T
+
+    eps = 1e-12
+
+    # Log-vraisemblance sous H0
+    log_likelihood_null = (
+        N * np.log(alpha)
+        + (T - N) * np.log(1 - alpha)
+    )
+
+    # Log-vraisemblance sous H1
+    if N == 0:
+        log_likelihood_alt = (T - N) * np.log(max(1 - p_hat, eps))
+    elif N == T:
+        log_likelihood_alt = N * np.log(max(p_hat, eps))
+    else:
+        log_likelihood_alt = (
+            N * np.log(p_hat)
+            + (T - N) * np.log(1 - p_hat)
+        )
+
+    LR_UC = -2 * (log_likelihood_null - log_likelihood_alt)
+
+    p_value = 1 - chi2.cdf(LR_UC, df=1)
+
+    return {
+        "N_test": T,
+        "Observed_Violations": N,
+        "Expected_Violations": alpha * T,
+        "Violation_Rate": p_hat,
+        "LR_UC": LR_UC,
+        "p_UC": p_value
+    }
+
+
+# ============================================================
+# 4. Test d'indépendance de Christoffersen
+# ============================================================
+
+def christoffersen_independence_test(violations):
+    """
+    Test d'indépendance de Christoffersen.
+
+    H0 : les violations sont indépendantes dans le temps.
+    """
+
+    violations = np.asarray(violations).astype(int)
+
+    previous = violations[:-1]
+    current = violations[1:]
+
+    n00 = int(((previous == 0) & (current == 0)).sum())
+    n01 = int(((previous == 0) & (current == 1)).sum())
+    n10 = int(((previous == 1) & (current == 0)).sum())
+    n11 = int(((previous == 1) & (current == 1)).sum())
+
+    eps = 1e-12
+
+    # Probabilités conditionnelles
+    pi01 = n01 / (n00 + n01) if (n00 + n01) > 0 else 0
+    pi11 = n11 / (n10 + n11) if (n10 + n11) > 0 else 0
+
+    # Probabilité commune sous indépendance
+    pi = (n01 + n11) / (n00 + n01 + n10 + n11)
+
+    def safe_log(x):
+        return np.log(min(max(x, eps), 1 - eps))
+
+    # Log-vraisemblance sous H0 : indépendance
+    log_likelihood_independent = (
+        (n00 + n10) * safe_log(1 - pi)
+        + (n01 + n11) * safe_log(pi)
+    )
+
+    # Log-vraisemblance sous H1 : dépendance markovienne
+    log_likelihood_dependent = (
+        n00 * safe_log(1 - pi01)
+        + n01 * safe_log(pi01)
+        + n10 * safe_log(1 - pi11)
+        + n11 * safe_log(pi11)
+    )
+
+    LR_IND = -2 * (
+        log_likelihood_independent
+        - log_likelihood_dependent
+    )
+
+    p_value = 1 - chi2.cdf(LR_IND, df=1)
+
+    return {
+        "n00": n00,
+        "n01": n01,
+        "n10": n10,
+        "n11": n11,
+        "pi01": pi01,
+        "pi11": pi11,
+        "LR_IND": LR_IND,
+        "p_IND": p_value
+    }
+
+
+# ============================================================
+# 5. Test de couverture conditionnelle
+# ============================================================
+
+def conditional_coverage_test(LR_UC, LR_IND):
+    """
+    Test de couverture conditionnelle.
+
+    LR_CC = LR_UC + LR_IND
+
+    H0 : couverture correcte + indépendance des violations.
+    """
+
+    LR_CC = LR_UC + LR_IND
+    p_value = 1 - chi2.cdf(LR_CC, df=2)
+
+    return {
+        "LR_CC": LR_CC,
+        "p_CC": p_value
+    }
+
+
+# ============================================================
+# 6. Application des tests à tous les modèles
+# ============================================================
+
+results = []
+
+for model in MODELS:
+
+    for confidence, alpha in CONFIDENCE_LEVELS.items():
+
+        violation_col = f"Violation_{model}_{confidence}"
+
+        if violation_col not in var_df.columns:
+            raise ValueError(
+                f"La colonne {violation_col} est absente du fichier VaR."
+            )
+
+        violations = var_df[violation_col].values
+
+        # Test Kupiec
+        kupiec_result = kupiec_unconditional_coverage_test(
+            violations=violations,
+            alpha=alpha
+        )
+
+        # Test Christoffersen indépendance
+        independence_result = christoffersen_independence_test(
+            violations=violations
+        )
+
+        # Test couverture conditionnelle
+        conditional_result = conditional_coverage_test(
+            LR_UC=kupiec_result["LR_UC"],
+            LR_IND=independence_result["LR_IND"]
+        )
+
+        # Décisions statistiques
+        decision_uc = (
+            "Reject H0"
+            if kupiec_result["p_UC"] < SIGNIFICANCE_LEVEL
+            else "Do not reject H0"
+        )
+
+        decision_ind = (
+            "Reject H0"
+            if independence_result["p_IND"] < SIGNIFICANCE_LEVEL
+            else "Do not reject H0"
+        )
+
+        decision_cc = (
+            "Reject H0"
+            if conditional_result["p_CC"] < SIGNIFICANCE_LEVEL
+            else "Do not reject H0"
+        )
+
+        results.append({
+            "Model": model,
+            "Confidence": confidence,
+            "Alpha": alpha,
+            "N_test": kupiec_result["N_test"],
+            "Observed_Violations": kupiec_result["Observed_Violations"],
+            "Expected_Violations": kupiec_result["Expected_Violations"],
+            "Violation_Rate": kupiec_result["Violation_Rate"],
+
+            "LR_UC": kupiec_result["LR_UC"],
+            "p_UC": kupiec_result["p_UC"],
+            "Decision_UC": decision_uc,
+
+            "n00": independence_result["n00"],
+            "n01": independence_result["n01"],
+            "n10": independence_result["n10"],
+            "n11": independence_result["n11"],
+            "pi01": independence_result["pi01"],
+            "pi11": independence_result["pi11"],
+
+            "LR_IND": independence_result["LR_IND"],
+            "p_IND": independence_result["p_IND"],
+            "Decision_IND": decision_ind,
+
+            "LR_CC": conditional_result["LR_CC"],
+            "p_CC": conditional_result["p_CC"],
+            "Decision_CC": decision_cc
+        })
+
+
+backtesting_results = pd.DataFrame(results)
+
+print("\n============================================================")
+print("RÉSULTATS DU BACKTESTING DE LA VaR")
+print("============================================================")
+print(backtesting_results)
+
+
+# ============================================================
+# 7. Tables séparées pour LaTeX
+# ============================================================
+
+kupiec_table = backtesting_results[
+    [
+        "Model",
+        "Confidence",
+        "Observed_Violations",
+        "Expected_Violations",
+        "Violation_Rate",
+        "LR_UC",
+        "p_UC",
+        "Decision_UC"
+    ]
+].copy()
+
+independence_table = backtesting_results[
+    [
+        "Model",
+        "Confidence",
+        "n00",
+        "n01",
+        "n10",
+        "n11",
+        "pi01",
+        "pi11",
+        "LR_IND",
+        "p_IND",
+        "Decision_IND"
+    ]
+].copy()
+
+conditional_table = backtesting_results[
+    [
+        "Model",
+        "Confidence",
+        "LR_UC",
+        "LR_IND",
+        "LR_CC",
+        "p_CC",
+        "Decision_CC"
+    ]
+].copy()
+
+
+# ============================================================
+# 8. Sauvegarde Excel
+# ============================================================
+
+OUTPUT_FILE = "Step8_VaR_Backtesting_results.xlsx"
+
+with pd.ExcelWriter(OUTPUT_FILE, engine="openpyxl") as writer:
+    backtesting_results.to_excel(
+        writer,
+        sheet_name="Backtesting_Results",
+        index=False
+    )
+
+    kupiec_table.to_excel(
+        writer,
+        sheet_name="Kupiec_Test",
+        index=False
+    )
+
+    independence_table.to_excel(
+        writer,
+        sheet_name="Christoffersen_IND",
+        index=False
+    )
+
+    conditional_table.to_excel(
+        writer,
+        sheet_name="Conditional_Coverage",
+        index=False
+    )
+
+print(f"\nRésultats sauvegardés dans : {OUTPUT_FILE}")
+
+
+# ============================================================
+# 9. Export LaTeX
+# ============================================================
+
+kupiec_table.to_latex(
+    "Step8_Kupiec_test_table.tex",
+    index=False,
+    escape=False,
+    float_format="%.6f",
+    caption="Test de couverture inconditionnelle de Kupiec",
+    label="tab:kupiec_test_results"
+)
+
+independence_table.to_latex(
+    "Step8_Christoffersen_independence_table.tex",
+    index=False,
+    escape=False,
+    float_format="%.6f",
+    caption="Test d'indépendance de Christoffersen",
+    label="tab:christoffersen_independence_results"
+)
+
+conditional_table.to_latex(
+    "Step8_Conditional_coverage_table.tex",
+    index=False,
+    escape=False,
+    float_format="%.6f",
+    caption="Test de couverture conditionnelle",
+    label="tab:conditional_coverage_results"
+)
+
+
+# ============================================================
+# 10. Visualisation 1 : Violations observées vs attendues
+# ============================================================
+
+for confidence, alpha in CONFIDENCE_LEVELS.items():
+
+    sub = backtesting_results[
+        backtesting_results["Confidence"] == confidence
+    ].copy()
+
+    x = np.arange(len(sub))
+    width = 0.35
+
+    plt.figure(figsize=(9, 5))
+
+    plt.bar(
+        x - width / 2,
+        sub["Observed_Violations"],
+        width,
+        label="Violations observées"
+    )
+
+    plt.bar(
+        x + width / 2,
+        sub["Expected_Violations"],
+        width,
+        label="Violations attendues"
+    )
+
+    plt.xticks(x, sub["Model"])
+    plt.title(
+        f"Violations observées vs attendues - VaR {confidence}%"
+    )
+    plt.xlabel("Modèle")
+    plt.ylabel("Nombre de violations")
+    plt.legend()
+    plt.tight_layout()
+
+    plt.savefig(
+        f"Step8_Observed_vs_Expected_Violations_{confidence}.png",
+        dpi=300
+    )
+    plt.show()
+
+
+# ============================================================
+# 11. Visualisation 2 : P-values des tests
+# ============================================================
+
+for test_name, p_col in [
+    ("Kupiec", "p_UC"),
+    ("Independence", "p_IND"),
+    ("Conditional_Coverage", "p_CC")
+]:
+
+    plt.figure(figsize=(10, 5))
+
+    labels = (
+        backtesting_results["Model"]
+        + " "
+        + backtesting_results["Confidence"].astype(str)
+        + "%"
+    )
+
+    plt.bar(
+        labels,
+        backtesting_results[p_col],
+        color="gray"
+    )
+
+    plt.axhline(
+        SIGNIFICANCE_LEVEL,
+        color="red",
+        linestyle="--",
+        linewidth=1,
+        label="Seuil 5%"
+    )
+
+    plt.title(f"P-values du test {test_name}")
+    plt.xlabel("Modèle")
+    plt.ylabel("P-value")
+    plt.xticks(rotation=30, ha="right")
+    plt.legend()
+    plt.tight_layout()
+
+    plt.savefig(f"Step8_Pvalues_{test_name}.png", dpi=300)
+    plt.show()
+
+
+# ============================================================
+# 12. Visualisation 3 : Violations dans le temps
+# ============================================================
+
+for model in MODELS:
+
+    for confidence in CONFIDENCE_LEVELS.keys():
+
+        violation_col = f"Violation_{model}_{confidence}"
+        threshold_col = f"Threshold_{model}_{confidence}"
+
+        plt.figure(figsize=(14, 6))
+
+        plt.plot(
+            var_df["Date"],
+            var_df["Return"],
+            label="Rendement réalisé",
+            color="black",
+            linewidth=0.7
+        )
+
+        plt.plot(
+            var_df["Date"],
+            var_df[threshold_col],
+            label=f"Seuil VaR {model} {confidence}%",
+            linewidth=1.1
+        )
+
+        violations = var_df[var_df[violation_col] == 1]
+
+        plt.scatter(
+            violations["Date"],
+            violations["Return"],
+            color="red",
+            s=20,
+            label="Violation"
+        )
+
+        plt.axhline(0, color="gray", linewidth=0.8)
+
+        plt.title(
+            f"Violations de VaR - {model} - {confidence}%"
+        )
+        plt.xlabel("Date")
+        plt.ylabel("Rendement / seuil VaR (%)")
+        plt.legend()
+        plt.tight_layout()
+
+        plt.savefig(
+            f"Step8_Violations_{model}_{confidence}.png",
+            dpi=300
+        )
+        plt.show()
+
+
+# ============================================================
+# 13. Conclusion automatique
+# ============================================================
+
+print("\n============================================================")
+print("CONCLUSION AUTOMATIQUE - BACKTESTING VaR")
+print("============================================================")
+
+for _, row in backtesting_results.iterrows():
+
+    print(
+        f"{row['Model']} - VaR {int(row['Confidence'])}% : "
+        f"Violations = {int(row['Observed_Violations'])}, "
+        f"Taux = {row['Violation_Rate']:.4f}, "
+        f"p_UC = {row['p_UC']:.4f}, "
+        f"p_IND = {row['p_IND']:.4f}, "
+        f"p_CC = {row['p_CC']:.4f}"
+    )
+
+print("""
+Interprétation :
+- Si p_UC > 0.05, le modèle respecte la couverture inconditionnelle.
+- Si p_IND > 0.05, les violations sont indépendantes dans le temps.
+- Si p_CC > 0.05, la VaR est globalement valide selon la couverture conditionnelle.
+- Un modèle valide doit idéalement ne pas rejeter H0 dans les trois tests.
+""")
